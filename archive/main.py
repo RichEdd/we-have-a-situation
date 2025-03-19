@@ -6,7 +6,7 @@ We Have a Situation! - A Tactical Hostage Negotiation Game
 import sys
 import os
 import pygame
-from simple_ui import SimpleUI
+from tactical_ui import TacticalUI
 
 def main():
     """Main entry point."""
@@ -18,7 +18,7 @@ def main():
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     
     # Initialize and run the game
-    ui = SimpleUI()
+    ui = TacticalUI()
     ui.run()
 
 if __name__ == "__main__":
