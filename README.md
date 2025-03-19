@@ -1,26 +1,26 @@
-# We Have a Situation
+# We Have a Situation!
 
-A turn-based hostage negotiation simulator that puts players in the roles of either hostage negotiators or hostage takers. Experience intense psychological warfare, resource management, and strategic decision-making in various realistic scenarios.
+A tactical hostage negotiation game where you play as one of three law enforcement agencies (FBI, CIA, or Local PD) managing a crisis situation. Make strategic decisions, manage resources, and navigate tense negotiations to achieve the best possible outcome.
 
 ## Features
 
-- **Turn-based Gameplay**: Strategic decision-making with no real-time pressure
-- **Psychological Warfare**: Complex dialogue system with various approaches (empathy, threats, deception, etc.)
-- **Resource Management**: Manage your available assets and personnel
-- **Multiple Scenarios**: Different locations with unique challenges and characteristics
-- **Hidden Objectives**: Each side has secret goals they must achieve
-- **Dynamic Environment**: Location features affect gameplay strategies
-- **Affiliation System**: Choose from different organizations with unique advantages
+- Three playable factions with unique abilities
+- Six action categories: Dialogue, Resources, Force, Tech, Negotiation, and Threats
+- Dynamic trust and tension system
+- Resource management
+- Tactical positioning
+- Turn-based gameplay with action points
+- Modern tactical UI with keyboard and controller support
 
 ## Installation
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/we-have-a-situation.git
-cd we-have-a-situation
+git clone https://github.com/yourusername/whas.git
+cd whas
 ```
 
-2. Create a virtual environment (recommended):
+2. Create a virtual environment (optional but recommended):
 ```bash
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
@@ -33,37 +33,48 @@ pip install -r requirements.txt
 
 ## Running the Game
 
-To start the game, run:
+Start the game by running:
 ```bash
 python src/main.py
 ```
 
-## Game Structure
+## Controls
 
-- `src/core/`: Core game mechanics and systems
-  - `game_engine.py`: Main game logic and state management
-  - `dialogue_system.py`: Dialogue and negotiation mechanics
-- `src/scenarios/`: Game scenarios and locations
-  - `base_scenario.py`: Base scenario class and scenario definitions
-- `src/entities/`: Game entities (players, hostages, etc.)
-- `src/utils/`: Utility functions and helpers
+### Keyboard
+- Arrow keys / WASD: Navigate menus
+- Enter / Space: Confirm selection
+- Escape: Back / Cancel
+- Tab: Special abilities menu
+- F11: Toggle fullscreen
 
-## Development Status
+### Controller
+- D-pad / Left stick: Navigate menus
+- A: Confirm selection
+- B: Back / Cancel
+- Y: Special abilities menu
 
-This is currently a prototype version focusing on core mechanics. Future development plans include:
+## Gameplay
 
-- [ ] 3D graphics and animations
-- [ ] More sophisticated AI behavior
-- [ ] Additional scenarios and locations
-- [ ] Extended dialogue options
-- [ ] Multiplayer support
-- [ ] Save/Load game functionality
-- [ ] Tutorial system
-- [ ] Achievement system
+1. Select your faction (FBI, CIA, or Local PD)
+2. Each turn you have 3 action points to spend
+3. Choose actions from six categories:
+   - Dialogue: Communicate with hostage takers
+   - Resources: Manage personnel and equipment
+   - Force: Position tactical units
+   - Tech: Deploy surveillance and technical solutions
+   - Negotiation: Work towards peaceful resolution
+   - Threats: Apply pressure when needed
+4. Monitor trust level, tension, and intel
+5. Complete objectives while maintaining control of the situation
 
-## Contributing
+## Development
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+The game is built with Python and Pygame. Key components:
+
+- `src/tactical_ui.py`: Main game interface
+- `src/core/game_state.py`: Game state management
+- `src/core/dialogue_system.py`: Action and dialogue systems
+- `src/input_handler.py`: Keyboard and controller input
 
 ## License
 
