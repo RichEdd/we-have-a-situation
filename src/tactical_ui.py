@@ -775,7 +775,7 @@ class TacticalUI:
             
             # Draw selection background
             if selected:
-                rect = pygame.Rect(WINDOW_WIDTH//2 - 400, y - 10, 800, 80)
+                rect = pygame.Rect(WINDOW_WIDTH//2 - 485, y - 10, 970, 80)
                 pygame.draw.rect(self.screen, COLORS['border'], rect,
                                border_radius=5)
             
