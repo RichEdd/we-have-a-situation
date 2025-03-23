@@ -33,6 +33,9 @@ class GameState:
         # Add initial history entry
         self.add_history_entry(f"Situation begins. {player_faction.value} responds.")
         
+        # Action cooldowns tracking
+        self.action_cooldowns = {}
+        
         # Enhanced resources for player
         self.player_resources = {
             'manpower': 10,
@@ -151,9 +154,6 @@ class GameState:
             'media_statement': False,
             'immunity': False
         }
-        
-        # Action cooldowns
-        self.action_cooldowns = {}
         
         # Action synergies
         self.last_action_category = None

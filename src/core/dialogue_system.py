@@ -59,26 +59,265 @@ class ActionEffect(Enum):
 @dataclass
 class GameAction:
     def __init__(self, name: str, category: ActionCategory, action_points: int,
-                 description: str, success_chance: float = 0.8):
+                 description: str, success_chance: float = 0.8, on_cooldown: bool = False,
+                 effects: List = None, requirements: Dict = None, faction_specific: List = None,
+                 is_special: bool = False, special_level: int = 0, dialogue_text: str = None):
         self.name = name
         self.category = category
         self.action_points = action_points
         self.description = description
-        self.success_chance = success_chance
-        self.effects = []
+        self.base_success_chance = success_chance  # Renamed to base_success_chance
+        self.success_chance = success_chance  # Current calculated success chance
+        self.effects = effects or []
+        self.consequences = []  # New field for tracking physical/environmental consequences
+        self.resource_cost = {}  # New field for tracking resource costs
+        self.personnel_cost = {}  # New field for tracking personnel costs
+        self.critical_threshold = 0.05  # For critical success/failure (top/bottom 5%)
+        self.on_cooldown = on_cooldown
+        self.requirements = requirements or {}
+        self.faction_specific = faction_specific or []
+        self.is_special = is_special
+        self.special_level = special_level
+        self.dialogue_text = dialogue_text
     
-    def perform(self, game_state) -> bool:
-        """Perform the action and return whether it was successful."""
-        success = random.random() < self.success_chance
+    def update_success_chance(self, game_state) -> None:
+        """Update the success chance based on game state."""
+        if not hasattr(game_state, 'get_dynamic_success_chance'):
+            self.success_chance = self.base_success_chance
+            return
+            
+        # Use the game state to calculate dynamic success chance
+        self.success_chance = game_state.get_dynamic_success_chance(
+            self.category.value, self.base_success_chance)
+    
+    def perform(self, game_state) -> Dict:
+        """Perform the action and return result details."""
+        # Update success chance based on current game state
+        self.update_success_chance(game_state)
+        
+        # Get random roll for success determination
+        roll = random.random()
+        success = roll < self.success_chance
+        
+        # Determine if this is a critical success/failure
+        critical_success = success and roll < (self.success_chance * self.critical_threshold)
+        critical_failure = not success and roll > (1 - self.critical_threshold)
+        partial_success = success and roll > (self.success_chance - 0.1)
+        
+        # Put action on cooldown if needed (for powerful actions)
+        if self.action_points >= 3 or critical_success or critical_failure:
+            game_state.add_action_cooldown(self.name, 3)  # 3 turn cooldown
         
         # Update game state based on action
         game_state.update_state_after_action(self.name, self.category.value, success)
         
-        return success
+        # Apply resource and personnel costs
+        self._apply_costs(game_state)
+        
+        # Apply consequences based on success/failure and critical status
+        consequence_results = self._apply_consequences(game_state, success, critical_success, critical_failure)
+        
+        # Return detailed results
+        return {
+            'action_name': self.name,
+            'category': self.category.value,
+            'success': success,
+            'critical_success': critical_success,
+            'critical_failure': critical_failure,
+            'partial_success': partial_success,
+            'roll': roll,
+            'target': self.success_chance,
+            'consequences': consequence_results
+        }
+    
+    def _apply_costs(self, game_state) -> None:
+        """Apply resource and personnel costs of the action."""
+        # Apply resource costs
+        for resource, amount in self.resource_cost.items():
+            game_state.modify_player_resource(resource, -amount)
+            
+        # Apply personnel costs
+        for personnel, amount in self.personnel_cost.items():
+            game_state.modify_player_personnel(personnel, -amount)
+    
+    def _apply_consequences(self, game_state, success: bool, critical_success: bool, critical_failure: bool) -> List[str]:
+        """Apply action consequences and return descriptions."""
+        consequences = []
+        
+        # No consequences defined for this action
+        if not self.consequences:
+            return consequences
+            
+        # Apply each defined consequence based on success/failure
+        for consequence in self.consequences:
+            applied = False
+            description = ""
+            
+            # Check probability of this consequence occurring
+            probability = consequence.get('probability', 1.0)
+            if random.random() > probability:
+                continue
+            
+            # Different logic based on consequence type
+            if consequence['type'] == 'environmental':
+                if success or (critical_failure and consequence.get('on_critical_failure', False)):
+                    condition = consequence['condition']
+                    value = consequence['value']
+                    prev_value = game_state.environment.get(condition, None)
+                    game_state.update_environment(condition, value)
+                    description = consequence.get('description', f"Environment changed: {condition} is now {value}")
+                    applied = True
+                    
+            elif consequence['type'] == 'hostage':
+                if success or (critical_failure and consequence.get('on_critical_failure', False)):
+                    # Handle hostage effects (release, wound, kill)
+                    effect = consequence['effect']
+                    count = consequence.get('count', 1)
+                    
+                    # Find applicable hostages
+                    applicable_hostages = [h for h in game_state.hostages_status 
+                                          if h['status'] == consequence.get('required_status', 'captured')]
+                    
+                    # Apply to random hostages up to count
+                    for _ in range(min(count, len(applicable_hostages))):
+                        if not applicable_hostages:
+                            break
+                            
+                        hostage = random.choice(applicable_hostages)
+                        applicable_hostages.remove(hostage)
+                        
+                        if effect == 'release':
+                            game_state.update_hostage_status(hostage['id'], {'status': 'released'})
+                            description = f"Hostage {hostage['name']} was released"
+                        elif effect == 'wound':
+                            game_state.update_hostage_status(hostage['id'], 
+                                                           {'status': 'wounded', 'health': max(hostage['health'] - 50, 10)})
+                            description = f"Hostage {hostage['name']} was wounded"
+                        elif effect == 'kill':
+                            game_state.update_hostage_status(hostage['id'], {'status': 'killed', 'health': 0})
+                            description = f"Hostage {hostage['name']} was killed"
+                        
+                        applied = True
+                        
+            elif consequence['type'] == 'ai_personnel':
+                if success:
+                    # Handle effects on AI personnel
+                    personnel_type = consequence['personnel_type']
+                    amount = consequence['amount']
+                    game_state.modify_ai_personnel(personnel_type, amount)
+                    if amount < 0:
+                        description = f"Enemy lost {-amount} {personnel_type}"
+                    else:
+                        description = f"Enemy gained {amount} {personnel_type}"
+                    applied = True
+            
+            elif consequence['type'] == 'resource':
+                if success:
+                    # Modify player resources
+                    resource_type = consequence['resource_type']
+                    amount = consequence['amount']
+                    
+                    # Apply critical success/failure scaling
+                    if critical_success:
+                        amount = int(amount * 1.5)
+                    elif critical_failure:
+                        amount = int(amount * 0.5)
+                        
+                    game_state.modify_player_resource(resource_type, amount)
+                    
+                    if amount > 0:
+                        description = f"Gained {amount} {resource_type}"
+                    else:
+                        description = f"Lost {-amount} {resource_type}"
+                    applied = True
+                    
+            elif consequence['type'] == 'ai_resource':
+                if success:
+                    # Modify AI resources
+                    resource_type = consequence['resource_type']
+                    amount = consequence['amount']
+                    
+                    # Apply critical success/failure scaling
+                    if critical_success:
+                        amount = int(amount * 1.5)
+                    elif critical_failure:
+                        amount = int(amount * 0.5)
+                        
+                    game_state.modify_ai_resource(resource_type, amount)
+                    
+                    if amount < 0:
+                        description = f"Reduced enemy {resource_type} by {-amount}"
+                    else:
+                        description = f"Enemy gained {amount} {resource_type}"
+                    applied = True
+            
+            elif consequence['type'] == 'tactical':
+                if success:
+                    # Set tactical position
+                    position = consequence['position']
+                    value = consequence['value']
+                    game_state.set_tactical_position(position, value)
+                    description = f"Secured tactical position: {position}"
+                    applied = True
+            
+            elif consequence['type'] == 'deadline':
+                if success:
+                    # Modify deadline
+                    amount = consequence['amount']
+                    game_state.hostage_deadline += amount
+                    if amount > 0:
+                        description = f"Extended deadline by {amount} turns"
+                    else:
+                        description = f"Deadline reduced by {-amount} turns"
+                    applied = True
+            
+            elif consequence['type'] == 'public':
+                if success:
+                    # Modify public perception or media control
+                    public_type = consequence['public_type']
+                    amount = consequence['amount']
+                    
+                    if public_type == 'media_control':
+                        current = game_state.player_resources.get('media_control', 0)
+                        game_state.player_resources['media_control'] = max(0, min(100, current + amount))
+                        description = f"Media control {'+' if amount > 0 else ''}{amount}%"
+                    elif public_type == 'public_support':
+                        current = game_state.player_resources.get('public_support', 0)
+                        game_state.player_resources['public_support'] = max(0, min(10, current + amount))
+                        description = f"Public support {'+' if amount > 0 else ''}{amount}"
+                    elif public_type == 'political_influence':
+                        current = game_state.player_resources.get('political_influence', 0)
+                        game_state.player_resources['political_influence'] = max(0, min(10, current + amount))
+                        description = f"Political influence {'+' if amount > 0 else ''}{amount}"
+                    applied = True
+            
+            if applied and description:
+                # Scale effects based on critical status
+                if critical_success and 'critical_success_modifier' in consequence:
+                    description += " (Critical Success!)"
+                elif critical_failure and 'critical_failure_modifier' in consequence:
+                    description += " (Critical Failure!)"
+                
+                consequences.append(description)
+                
+        return consequences
     
     def get_effects(self) -> List[Dict]:
         """Get the effects of this action."""
         return self.effects
+        
+    def add_consequence(self, consequence_type: str, **kwargs) -> None:
+        """Add a consequence to this action."""
+        consequence = {'type': consequence_type, **kwargs}
+        self.consequences.append(consequence)
+        
+    def add_resource_cost(self, resource: str, amount: int) -> None:
+        """Add a resource cost to this action."""
+        self.resource_cost[resource] = amount
+        
+    def add_personnel_cost(self, personnel: str, amount: int) -> None:
+        """Add a personnel cost to this action."""
+        self.personnel_cost[personnel] = amount
 
 class GameState:
     def __init__(self, player_faction: Faction):
@@ -453,263 +692,497 @@ class DialogueSystem:
 
 class ActionSystem:
     def __init__(self):
-        self.dialogue_system = DialogueSystem()
-    
+        self.dialogue_options = self._initialize_actions()
+        
+        # Add faction-specific special abilities
+        self._add_fbi_specials(self.dialogue_options)
+        self._add_cia_specials(self.dialogue_options)
+        self._add_local_pd_specials(self.dialogue_options)
+        
+        # Add criminal faction abilities
+        self._add_shadow_syndicate_specials(self.dialogue_options)
+        self._add_red_dragon_triad_specials(self.dialogue_options)
+        self._add_liberation_front_specials(self.dialogue_options)
+        
+        # Initialize turn counters for gradual point scaling
+        self.turn_thresholds = {
+            'early_game': 5,   # Turns 1-5
+            'mid_game': 12,    # Turns 6-12
+            'late_game': 15    # Turns 13+
+        }
+        
     def get_available_actions(self, param):
-        """Get available actions based on input parameter."""
-        # Check if the parameter is an ActionCategory
+        """Get available actions based on category or game state."""
+        # Handle parameter that could be either an ActionCategory or a GameState
         if isinstance(param, ActionCategory):
-            return self.dialogue_system.dialogue_options.get(param, [])
-        
-        # Otherwise assume it's a GameState
-        elif hasattr(param, 'action_points'):
+            # Return actions for this category
+            category = param
+            if category in self.dialogue_options:
+                # Filter out actions that are on cooldown
+                return [action for action in self.dialogue_options[category] 
+                        if not (hasattr(action, 'on_cooldown') and action.on_cooldown)]
+            return []
+        else:
+            # Assume it's a GameState
             game_state = param
-            available_actions = {category: [] for category in ActionCategory}
             
-            # Add dialogue actions that the player can afford
-            for category, action_list in self.dialogue_system.dialogue_options.items():
-                available_actions[category] = []
-                for action in action_list:
-                    if action.action_points <= game_state.action_points:
-                        available_actions[category].append(action)
+            # Check for cooldowns
+            for category in self.dialogue_options:
+                for action in self.dialogue_options[category]:
+                    action.on_cooldown = game_state.is_action_on_cooldown(action.name)
+                    # Update success chance based on current game state
+                    action.update_success_chance(game_state)
             
-            return available_actions
-        
-        # Fallback to empty list
-        return []
+            # Get actions for this game state based on faction
+            faction = game_state.player_faction
+            result = {}
+            
+            # Copy the actions for each category, filtering based on cooldown
+            for category in self.dialogue_options:
+                result[category] = [
+                    action for action in self.dialogue_options[category]
+                    if not action.on_cooldown
+                ]
+            
+            return result
 
     def _initialize_actions(self) -> Dict[ActionCategory, List[GameAction]]:
         actions = {category: [] for category in ActionCategory}
         
         # Dialogue Actions (1 AP)
+        dialogue_action1 = GameAction(
+            name="Open Communication",
+            description="Establish contact with hostage takers",
+            category=ActionCategory.DIALOGUE,
+            action_points=1,
+            success_chance=0.85
+        )
+        dialogue_action1.add_consequence('resource', resource_type='intelligence', amount=1)
+        dialogue_action1.add_consequence('public', public_type='media_control', amount=5)
+        
+        dialogue_action2 = GameAction(
+            name="Empathize", 
+            description="Show understanding to build rapport",
+            category=ActionCategory.DIALOGUE,
+            action_points=1,
+            success_chance=0.80
+        )
+        dialogue_action2.add_consequence('resource', resource_type='negotiation_leverage', amount=1)
+        
+        dialogue_action3 = GameAction(
+            name="Gather Information",
+            description="Ask questions to learn more about their situation",
+            category=ActionCategory.DIALOGUE,
+            action_points=2,
+            success_chance=0.75
+        )
+        dialogue_action3.add_consequence('resource', resource_type='intelligence', amount=2)
+        dialogue_action3.add_consequence('ai_resource', resource_type='concealment', amount=-1)
+        
+        dialogue_action4 = GameAction(
+            name="Assert Authority",
+            description="Take control of the conversation",
+            category=ActionCategory.DIALOGUE,
+            action_points=2,
+            success_chance=0.65
+        )
+        dialogue_action4.add_resource_cost('negotiation_leverage', 1)
+        dialogue_action4.add_consequence('public', public_type='media_control', amount=10)
+        dialogue_action4.add_consequence('ai_resource', resource_type='leverage', amount=-1)
+        
         actions[ActionCategory.DIALOGUE].extend([
-            GameAction(
-                name="Empathetic Appeal",
-                description="Show understanding and compassion to build trust",
-                category=ActionCategory.DIALOGUE,
-                action_points=1,
-                effects=[ActionEffect.TRUST_INCREASE, ActionEffect.TENSION_DECREASE],
-                requirements={},
-                success_chance=0.8,
-                dialogue_text="I understand this is a difficult situation. Let's work together."
-            ),
-            GameAction(
-                name="Aggressive Stance",
-                description="Take a hard line to show authority",
-                category=ActionCategory.DIALOGUE,
-                action_points=1,
-                effects=[ActionEffect.TENSION_INCREASE, ActionEffect.TACTICAL_ADVANTAGE],
-                requirements={},
-                success_chance=0.6,
-                dialogue_text="Don't test our patience. You're only making this worse."
-            ),
+            dialogue_action1, dialogue_action2, dialogue_action3, dialogue_action4
         ])
         
-        # Resource Actions (1-2 AP)
+        # Resources Actions (1-2 AP)
+        resource_action1 = GameAction(
+            name="Deploy Units",
+            description="Position additional units around the perimeter",
+            category=ActionCategory.RESOURCES,
+            action_points=2,
+            success_chance=0.90
+        )
+        resource_action1.add_resource_cost('manpower', 2)
+        resource_action1.add_consequence('resource', resource_type='security_perimeter', amount=10)
+        resource_action1.add_consequence('ai_resource', resource_type='exits_controlled', amount=-1, probability=0.3)
+        
+        resource_action2 = GameAction(
+            name="Request Equipment",
+            description="Call for specialized equipment",
+            category=ActionCategory.RESOURCES,
+            action_points=2,
+            success_chance=0.85
+        )
+        resource_action2.add_consequence('resource', resource_type='tactical_gear', amount=2)
+        resource_action2.add_consequence('resource', resource_type='communications_equipment', amount=1)
+        
+        resource_action3 = GameAction(
+            name="Medical Standby",
+            description="Position medical teams nearby",
+            category=ActionCategory.RESOURCES,
+            action_points=1,
+            success_chance=0.95
+        )
+        resource_action3.add_resource_cost('medical', 1)
+        resource_action3.add_consequence('resource', resource_type='medical', amount=2)
+        
+        resource_action4 = GameAction(
+            name="Allocate Resources",
+            description="Redistribute available resources for better efficiency",
+            category=ActionCategory.RESOURCES,
+            action_points=2,
+            success_chance=0.80
+        )
+        resource_action4.add_resource_cost('money', 500000)
+        resource_action4.add_consequence('resource', resource_type='equipment', amount=2)
+        resource_action4.add_consequence('resource', resource_type='tactical_gear', amount=1)
+        resource_action4.add_consequence('resource', resource_type='vehicles', amount=1)
+        
         actions[ActionCategory.RESOURCES].extend([
-            GameAction(
-                name="Deploy Medical Team",
-                description="Position medical personnel for potential casualties",
-                category=ActionCategory.RESOURCES,
-                action_points=2,
-                effects=[ActionEffect.TRUST_INCREASE, ActionEffect.TACTICAL_ADVANTAGE],
-                requirements={"medical": 2},
-                success_chance=0.9
-            ),
-            GameAction(
-                name="Request Backup",
-                description="Call for additional personnel",
-                category=ActionCategory.RESOURCES,
-                action_points=1,
-                effects=[ActionEffect.RESOURCE_GAIN, ActionEffect.TENSION_INCREASE],
-                requirements={"personnel": 5},
-                success_chance=0.95
-            ),
+            resource_action1, resource_action2, resource_action3, resource_action4
         ])
         
         # Force Actions (2-3 AP)
+        force_action1 = GameAction(
+            name="Position Snipers",
+            description="Set up sniper positions for tactical advantage",
+            category=ActionCategory.FORCE,
+            action_points=3,
+            success_chance=0.70
+        )
+        force_action1.add_personnel_cost('snipers', 2)
+        force_action1.add_resource_cost('tactical_gear', 1)
+        force_action1.add_consequence('tactical', position='sniper_positions', value=True)
+        force_action1.add_consequence('ai_resource', resource_type='concealment', amount=-2)
+        
+        force_action2 = GameAction(
+            name="Deploy Breach Team",
+            description="Position breach team for potential entry",
+            category=ActionCategory.FORCE,
+            action_points=3,
+            success_chance=0.75
+        )
+        force_action2.add_personnel_cost('tactical_units', 3)
+        force_action2.add_resource_cost('tactical_gear', 2)
+        force_action2.add_consequence('tactical', position='breach_points', value=True)
+        force_action2.add_consequence('ai_resource', resource_type='exits_controlled', amount=-1)
+        
+        force_action3 = GameAction(
+            name="Show of Force",
+            description="Demonstrate tactical capabilities",
+            category=ActionCategory.FORCE,
+            action_points=2,
+            success_chance=0.65
+        )
+        force_action3.add_resource_cost('tactical_gear', 1)
+        force_action3.add_consequence('ai_resource', resource_type='leverage', amount=-1)
+        force_action3.add_consequence('environmental', condition='power_status', value='partial', 
+                                  on_critical_failure=True, probability=0.4)
+        
+        force_action4 = GameAction(
+            name="Tactical Positioning",
+            description="Optimize unit positions for maximum coverage",
+            category=ActionCategory.FORCE,
+            action_points=2,
+            success_chance=0.80
+        )
+        force_action4.add_personnel_cost('tactical_units', 2)
+        force_action4.add_consequence('resource', resource_type='security_perimeter', amount=15)
+        force_action4.add_consequence('ai_resource', resource_type='concealment', amount=-1)
+        
         actions[ActionCategory.FORCE].extend([
-            GameAction(
-                name="Position Snipers",
-                description="Deploy tactical shooters to key positions",
-                category=ActionCategory.FORCE,
-                action_points=2,
-                effects=[ActionEffect.TACTICAL_ADVANTAGE, ActionEffect.TENSION_INCREASE],
-                requirements={"personnel": 3},
-                success_chance=0.85,
-                faction_specific=[Faction.FBI, Faction.LOCAL_PD]
-            ),
-            GameAction(
-                name="Breach and Clear",
-                description="Forceful entry to end the situation",
-                category=ActionCategory.FORCE,
-                action_points=3,
-                effects=[ActionEffect.TENSION_INCREASE, ActionEffect.TACTICAL_ADVANTAGE],
-                requirements={"personnel": 8, "equipment": 4},
-                success_chance=0.7
-            ),
+            force_action1, force_action2, force_action3, force_action4
         ])
         
         # Tech Actions (1-2 AP)
+        tech_action1 = GameAction(
+            name="Surveillance Deployment",
+            description="Set up surveillance equipment",
+            category=ActionCategory.TECH,
+            action_points=2,
+            success_chance=0.85
+        )
+        tech_action1.add_resource_cost('equipment', 1)
+        tech_action1.add_resource_cost('communications_equipment', 1)
+        tech_action1.add_consequence('resource', resource_type='surveillance_cameras', amount=3)
+        tech_action1.add_consequence('tactical', position='surveillance', value=True)
+        tech_action1.add_consequence('ai_resource', resource_type='concealment', amount=-2)
+        
+        tech_action2 = GameAction(
+            name="Communications Intercept",
+            description="Attempt to intercept their communications",
+            category=ActionCategory.TECH,
+            action_points=2,
+            success_chance=0.70
+        )
+        tech_action2.add_resource_cost('communications_equipment', 2)
+        tech_action2.add_consequence('resource', resource_type='intelligence', amount=3)
+        tech_action2.add_consequence('ai_resource', resource_type='communications', amount=-1)
+        
+        tech_action3 = GameAction(
+            name="Thermal Imaging",
+            description="Use thermal cameras to gather intel",
+            category=ActionCategory.TECH,
+            action_points=1,
+            success_chance=0.80
+        )
+        tech_action3.add_resource_cost('equipment', 1)
+        tech_action3.add_consequence('resource', resource_type='intelligence', amount=2)
+        tech_action3.add_consequence('ai_resource', resource_type='concealment', amount=-2)
+        
+        tech_action4 = GameAction(
+            name="Network Analysis",
+            description="Analyze digital communications patterns",
+            category=ActionCategory.TECH,
+            action_points=2,
+            success_chance=0.75
+        )
+        tech_action4.add_personnel_cost('tech_specialists', 1)
+        tech_action4.add_consequence('resource', resource_type='intelligence', amount=2)
+        tech_action4.add_consequence('ai_resource', resource_type='information', amount=-1)
+        
         actions[ActionCategory.TECH].extend([
-            GameAction(
-                name="Surveillance Deployment",
-                description="Set up electronic surveillance",
-                category=ActionCategory.TECH,
-                action_points=2,
-                effects=[ActionEffect.INTEL_GAINED, ActionEffect.TACTICAL_ADVANTAGE],
-                requirements={"equipment": 2},
-                success_chance=0.9
-            ),
-            GameAction(
-                name="Communications Intercept",
-                description="Monitor communications",
-                category=ActionCategory.TECH,
-                action_points=1,
-                effects=[ActionEffect.INTEL_GAINED],
-                requirements={"equipment": 1},
-                success_chance=0.8,
-                faction_specific=[Faction.FBI, Faction.CIA]
-            ),
+            tech_action1, tech_action2, tech_action3, tech_action4
         ])
         
-        # Negotiation Actions (1-3 AP)
+        # Negotiation Actions (1-2 AP)
+        negotiation_action1 = GameAction(
+            name="Make Offer",
+            description="Present a negotiated offer",
+            category=ActionCategory.NEGOTIATION,
+            action_points=2,
+            success_chance=0.70
+        )
+        negotiation_action1.add_resource_cost('negotiation_leverage', 1)
+        negotiation_action1.add_resource_cost('money', 1000000)
+        negotiation_action1.add_consequence('ai_resource', resource_type='money_demanded', amount=-2000000)
+        negotiation_action1.add_consequence('hostage', effect='release', count=1, required_status='captured', probability=0.6)
+        
+        negotiation_action2 = GameAction(
+            name="Request Good Faith",
+            description="Ask for a show of good faith",
+            category=ActionCategory.NEGOTIATION,
+            action_points=2,
+            success_chance=0.65
+        )
+        negotiation_action2.add_consequence('hostage', effect='release', count=1, required_status='captured', probability=0.5)
+        
+        negotiation_action3 = GameAction(
+            name="Propose Timeline",
+            description="Establish a timeline for resolution",
+            category=ActionCategory.NEGOTIATION,
+            action_points=1,
+            success_chance=0.75
+        )
+        negotiation_action3.add_consequence('deadline', amount=2)  # Extend deadline by 2 turns
+        
+        negotiation_action4 = GameAction(
+            name="Demand Concession",
+            description="Firmly request specific concessions",
+            category=ActionCategory.NEGOTIATION,
+            action_points=2,
+            success_chance=0.60
+        )
+        negotiation_action4.add_resource_cost('political_influence', 1)
+        negotiation_action4.add_consequence('hostage', effect='release', count=1, required_status='captured', probability=0.4)
+        negotiation_action4.add_consequence('ai_resource', resource_type='leverage', amount=-2)
+        
         actions[ActionCategory.NEGOTIATION].extend([
-            GameAction(
-                name="Offer Deal",
-                description="Propose terms for resolution",
-                category=ActionCategory.NEGOTIATION,
-                action_points=2,
-                effects=[ActionEffect.TRUST_INCREASE, ActionEffect.TENSION_DECREASE],
-                requirements={},
-                success_chance=0.75,
-                dialogue_text="We're prepared to offer you a deal. Let's discuss terms."
-            ),
-            GameAction(
-                name="Demand Hostage Release",
-                description="Push for hostage release",
-                category=ActionCategory.NEGOTIATION,
-                action_points=1,
-                effects=[ActionEffect.HOSTAGE_RELEASE, ActionEffect.TENSION_INCREASE],
-                requirements={},
-                success_chance=0.6,
-                dialogue_text="Release a hostage as a show of good faith."
-            ),
+            negotiation_action1, negotiation_action2, negotiation_action3, negotiation_action4
         ])
         
-        # Threat Actions (2-3 AP)
+        # Threats Actions (1-3 AP)
+        threats_action1 = GameAction(
+            name="Verbal Warning",
+            description="Issue a warning about consequences",
+            category=ActionCategory.THREATS,
+            action_points=1,
+            success_chance=0.55
+        )
+        threats_action1.add_consequence('ai_resource', resource_type='leverage', amount=-1)
+        
+        threats_action2 = GameAction(
+            name="Demonstrate Resolve",
+            description="Show willingness to take action",
+            category=ActionCategory.THREATS,
+            action_points=2,
+            success_chance=0.60
+        )
+        threats_action2.add_resource_cost('tactical_gear', 1)
+        threats_action2.add_resource_cost('security_perimeter', 5)
+        threats_action2.add_consequence('ai_resource', resource_type='leverage', amount=-2)
+        
+        threats_action3 = GameAction(
+            name="Ultimatum",
+            description="Present final terms",
+            category=ActionCategory.THREATS,
+            action_points=3,
+            success_chance=0.50
+        )
+        threats_action3.add_resource_cost('political_influence', 1)
+        threats_action3.add_resource_cost('negotiation_leverage', 2)
+        threats_action3.add_consequence('hostage', effect='release', count=2, required_status='captured', probability=0.4)
+        threats_action3.add_consequence('environmental', condition='power_status', value='off',
+                                     on_critical_failure=True, probability=0.6)
+        
+        threats_action4 = GameAction(
+            name="Pressure Tactics",
+            description="Apply psychological pressure to force compliance",
+            category=ActionCategory.THREATS,
+            action_points=2,
+            success_chance=0.65
+        )
+        threats_action4.add_resource_cost('intelligence', 1)
+        threats_action4.add_consequence('ai_resource', resource_type='leverage', amount=-1)
+        threats_action4.add_consequence('hostage', effect='release', count=1, required_status='captured', probability=0.3)
+        
         actions[ActionCategory.THREATS].extend([
-            GameAction(
-                name="Show of Force",
-                description="Demonstrate available firepower",
-                category=ActionCategory.THREATS,
-                action_points=2,
-                effects=[ActionEffect.TENSION_INCREASE, ActionEffect.TACTICAL_ADVANTAGE],
-                requirements={"personnel": 5, "equipment": 2},
-                success_chance=0.7,
-                dialogue_text="Look outside. You're surrounded by our tactical teams."
-            ),
-            GameAction(
-                name="Ultimate Threat",
-                description="Final warning before force",
-                category=ActionCategory.THREATS,
-                action_points=3,
-                effects=[ActionEffect.TENSION_INCREASE, ActionEffect.TRUST_DECREASE],
-                requirements={},
-                success_chance=0.5,
-                dialogue_text="This is your last chance. Surrender now or face the consequences."
-            ),
+            threats_action1, threats_action2, threats_action3, threats_action4
         ])
-        
-        # Add faction-specific special abilities
-        self._add_fbi_specials(actions)
-        self._add_cia_specials(actions)
-        self._add_local_pd_specials(actions)
-        self._add_shadow_syndicate_specials(actions)
-        self._add_red_dragon_triad_specials(actions)
-        self._add_liberation_front_specials(actions)
         
         return actions
     
-    def perform_action(self, action: GameAction, game_state: GameState) -> Dict:
-        """Perform an action and return the results."""
-        # Check if special ability has already been used this turn
-        if action.is_special and action.name in game_state.used_special_abilities:
+    def perform_action(self, game_state, action):
+        """Perform an action and apply its effects."""
+        # Check if we have enough action points
+        if game_state.action_points < action.action_points:
             return {
-                "action": action.name,
-                "category": action.category.value,
-                "success": False,
-                "effects": [],
-                "turn": game_state.turn,
-                "error": "Special ability already used this turn"
+                'success': False,
+                'message': f"Not enough action points. Need {action.action_points}, have {game_state.action_points}."
             }
-
-        success = random.random() < action.success_chance
-        effects_applied = []
         
-        # Apply effects if successful
-        if success:
-            for effect in action.effects:
-                effect_result = self._apply_effect(effect, game_state)
-                effects_applied.append(effect_result)
-                
-                # Handle CIA level 3 special ability
-                if action.is_special and action.special_level == 3 and game_state.player_faction == Faction.CIA:
-                    if effect == ActionEffect.EXTRA_ACTION_POINTS:
-                        game_state.next_turn_extra_ap = 1  # Will grant 4 AP next turn
+        # Check if action is on cooldown
+        if game_state.is_action_on_cooldown(action.name):
+            return {
+                'success': False,
+                'message': f"Action {action.name} is on cooldown."
+            }
+        
+        # Perform the action
+        result = action.perform(game_state)
         
         # Deduct action points
         game_state.action_points -= action.action_points
         
-        # Track used special ability
-        if action.is_special:
-            game_state.used_special_abilities.append(action.name)
+        # Get game stage for scaling effects
+        game_stage = self._get_game_stage(game_state.turn)
         
-        # Record in appropriate history
-        result = {
-            "action": action.name,
-            "category": action.category.value,
-            "success": success,
-            "effects": effects_applied,
-            "turn": game_state.turn,
-            "is_special": action.is_special,
-            "special_level": action.special_level
-        }
+        # Apply scaled effects based on success/failure and game stage
+        if result['success']:
+            effect_multiplier = 1.0
+            
+            # Apply scaling based on game stage
+            if game_stage == 'early_game':
+                effect_multiplier = 0.5  # 50% effect in early game
+            elif game_stage == 'mid_game':
+                effect_multiplier = 1.0  # 100% effect in mid game
+            elif game_stage == 'late_game':
+                effect_multiplier = 1.5  # 150% effect in late game
+                
+            # Apply critical success/failure scaling
+            if result['critical_success']:
+                effect_multiplier *= 1.5  # 50% more effect on critical success
+            elif result['partial_success']:
+                effect_multiplier *= 0.5  # 50% less effect on partial success
+                
+            # Apply effects based on action category
+            category = action.category.value
+            if category == "DIALOGUE":
+                game_state.modify_trust(0.1 * effect_multiplier)
+                game_state.modify_tension(-0.05 * effect_multiplier)
+            elif category == "FORCE":
+                game_state.modify_trust(-0.1 * effect_multiplier)
+                game_state.modify_tension(0.15 * effect_multiplier)
+            elif category == "TECH":
+                game_state.modify_morale(0.15 * effect_multiplier)
+                game_state.modify_tension(-0.1 * effect_multiplier)
+            elif category == "NEGOTIATION":
+                game_state.modify_trust(0.15 * effect_multiplier)
+                game_state.modify_tension(-0.1 * effect_multiplier)
+            elif category == "RESOURCES":
+                game_state.modify_morale(0.1 * effect_multiplier)
+            elif category == "THREATS":
+                game_state.modify_trust(-0.1 * effect_multiplier)
+                game_state.modify_tension(0.2 * effect_multiplier)
+                
+            # Apply the action's effects
+            for effect in action.effects:
+                effect_result = self._apply_effect(effect, game_state, effect_multiplier)
+                if 'message' in effect_result:
+                    result.setdefault('messages', []).append(effect_result['message'])
+        else:
+            # On failure, increase tension (more on critical failure)
+            if result['critical_failure']:
+                game_state.modify_tension(0.22)  # +50% tension on critical failure
+                result['message'] = f"Critical failure on {action.name}!"
+            else:
+                game_state.modify_tension(0.15)
+                result['message'] = f"Failed to perform {action.name}."
         
-        if action.dialogue_text:
-            game_state.dialogue_history.append({
-                "turn": game_state.turn,
-                "speaker": game_state.player_faction.value,
-                "text": action.dialogue_text,
-                "success": success
-            })
-        
-        game_state.game_history.append(result)
         return result
-    
-    def _apply_effect(self, effect: ActionEffect, game_state: GameState) -> Dict:
-        """Apply an effect to the game state."""
-        effect_magnitude = 0.1
         
-        if effect in [ActionEffect.TRUST_INCREASE, ActionEffect.TRUST_DECREASE]:
-            game_state.trust_level = max(0.0, min(1.0, 
-                game_state.trust_level + (effect_magnitude if effect == ActionEffect.TRUST_INCREASE else -effect_magnitude)))
-        elif effect in [ActionEffect.TENSION_INCREASE, ActionEffect.TENSION_DECREASE]:
-            game_state.tension_level = max(0.0, min(1.0,
-                game_state.tension_level + (effect_magnitude if effect == ActionEffect.TENSION_INCREASE else -effect_magnitude)))
+    def _get_game_stage(self, turn: int) -> str:
+        """Determine the current game stage based on turn number."""
+        if turn <= self.turn_thresholds['early_game']:
+            return 'early_game'
+        elif turn <= self.turn_thresholds['mid_game']:
+            return 'mid_game'
+        else:
+            return 'late_game'
+        
+    def _apply_effect(self, effect: ActionEffect, game_state: GameState, multiplier: float = 1.0) -> Dict:
+        """Apply an effect to the game state with optional multiplier."""
+        result = {}
+        
+        if effect == ActionEffect.TRUST_INCREASE:
+            game_state.modify_trust(0.1 * multiplier)
+            result['message'] = f"Trust increased by {0.1 * multiplier:.2f}"
+        elif effect == ActionEffect.TRUST_DECREASE:
+            game_state.modify_trust(-0.1 * multiplier)
+            result['message'] = f"Trust decreased by {0.1 * multiplier:.2f}"
+        elif effect == ActionEffect.TENSION_INCREASE:
+            game_state.modify_tension(0.1 * multiplier)
+            result['message'] = f"Tension increased by {0.1 * multiplier:.2f}"
+        elif effect == ActionEffect.TENSION_DECREASE:
+            game_state.modify_tension(-0.1 * multiplier)
+            result['message'] = f"Tension decreased by {0.1 * multiplier:.2f}"
+        elif effect == ActionEffect.MORALE_INCREASE:
+            game_state.modify_morale(0.1 * multiplier)
+            result['message'] = f"Morale increased by {0.1 * multiplier:.2f}"
+        elif effect == ActionEffect.MORALE_DECREASE:
+            game_state.modify_morale(-0.1 * multiplier)
+            result['message'] = f"Morale decreased by {0.1 * multiplier:.2f}"
+        elif effect == ActionEffect.HOSTAGE_RELEASE:
+            # Try to release 1 hostage with scaling based on multiplier
+            release_count = max(1, int(1 * multiplier))
+            available_hostages = [h for h in game_state.hostages_status 
+                                if h['status'] == 'captured']
+            
+            for _ in range(min(release_count, len(available_hostages))):
+                if available_hostages:
+                    hostage = random.choice(available_hostages)
+                    game_state.update_hostage_status(hostage['id'], {'status': 'released'})
+                    result['message'] = f"Hostage {hostage['name']} released"
+                    available_hostages.remove(hostage)
         elif effect == ActionEffect.RESOURCE_GAIN:
-            for resource in game_state.resources:
-                game_state.resources[resource] += 1
-        elif effect == ActionEffect.RESOURCE_LOSS:
-            for resource in game_state.resources:
-                game_state.resources[resource] = max(0, game_state.resources[resource] - 1)
+            resource_type = 'intelligence'  # Default resource
+            amount = int(1 * multiplier)
+            game_state.modify_player_resource(resource_type, amount)
+            result['message'] = f"Gained {amount} {resource_type}"
+        elif effect == ActionEffect.TACTICAL_ADVANTAGE:
+            # Enable a random tactical position that's not already active
+            inactive_positions = [pos for pos, active in game_state.tactical_positions.items() 
+                                if not active]
+            if inactive_positions:
+                position = random.choice(inactive_positions)
+                game_state.set_tactical_position(position, True)
+                result['message'] = f"Gained tactical advantage: {position}"
         elif effect == ActionEffect.EXTRA_ACTION_POINTS:
-            game_state.next_turn_extra_ap = 1
+            extra_ap = max(1, int(1 * multiplier))
+            game_state.next_turn_extra_ap += extra_ap
+            result['message'] = f"Gained {extra_ap} extra action points for next turn"
         
-        return {
-            "type": effect.value,
-            "magnitude": effect_magnitude
-        }
+        return result
 
     def _add_fbi_specials(self, actions: Dict[ActionCategory, List[GameAction]]):
         # FBI Special Abilities
