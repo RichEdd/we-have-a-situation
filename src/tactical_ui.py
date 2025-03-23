@@ -41,6 +41,8 @@ COLORS = {
     'ap': (255, 200, 0),  # Gold
     'grid': (30, 40, 50),  # Dark blue-grey for background grid
     'border': (0, 255, 170, 30),  # Glowing cyan-green, very transparent
+    'ai_overlay': (10, 12, 14, 200),  # Dark overlay for AI turn
+    'ai_text': (255, 100, 100),  # Red text for AI actions
 }
 
 # UI Elements
@@ -59,6 +61,8 @@ class UIState(Enum):
     MAIN_GAME = auto()
     ACTION_MENU = auto()
     EXIT_CONFIRM = auto()
+    AI_TURN = auto()  # New state for AI turn
+    HISTORY_LOG = auto()  # New state for viewing game history
 
 class InputDirection(Enum):
     """Enum for directional input."""
@@ -99,6 +103,12 @@ class TacticalUI:
         self.selected_index = 0              # Used for menu selection
         self.current_category_index = 0      # Used for action categories
         self.selected_action_index = -1      # Used for action selection in wheel menu
+        
+        # AI turn display control
+        self.show_ai_turn = False
+        self.history_page = 0
+        self.history_entries_per_page = 15
+        
         self.game_state = None
         
         # Side and faction options
@@ -107,9 +117,9 @@ class TacticalUI:
             Faction.FBI: "Elite tactical unit with jurisdiction autonomy, special agents including mentalists, psychological profilers, and bomb experts.",
             Faction.CIA: "Advanced intelligence division with high-tech capabilities, able to hack cameras, control infrastructure, and deploy drones.",
             Faction.LOCAL_PD: "Experienced local force with intimate knowledge of terrain, building layouts, and community connections.",
-            Faction.CHILDREN_OF_THE_VEIL: "Mysterious religious cult with strong influence over local rural communities and devoted followers.",
-            Faction.ZERO_SIGNAL: "Decentralized dark web hacker collective specializing in cyber warfare and digital disruption.",
-            Faction.ECLIPSE_ORDER: "Well-funded terrorist organization with significant financial resources and political influence."
+            Faction.SHADOW_SYNDICATE: "Professional criminal organization with diverse skillsets and international connections.",
+            Faction.RED_DRAGON_TRIAD: "Hierarchical crime syndicate specializing in smuggling operations and extortion.",
+            Faction.LIBERATION_FRONT: "Radical political group fighting for autonomy through both activism and violence."
         }
         self.faction_groups = {
             "Negotiator": [
@@ -118,9 +128,9 @@ class TacticalUI:
                 Faction.LOCAL_PD
             ],
             "Hostage Taker": [
-                Faction.CHILDREN_OF_THE_VEIL,
-                Faction.ZERO_SIGNAL,
-                Faction.ECLIPSE_ORDER
+                Faction.SHADOW_SYNDICATE,
+                Faction.RED_DRAGON_TRIAD,
+                Faction.LIBERATION_FRONT
             ]
         }
         self.selected_side = None
@@ -327,60 +337,177 @@ class TacticalUI:
             y = line_y + 10  # Add space between objectives
     
     def _draw_dialogue_panel(self):
-        """Draw the dialogue panel."""
+        """Draw the dialogue panel at the bottom of the screen."""
+        if not self.game_state:
+            return
+        
+        # Set up panel dimensions
+        panel_width = WINDOW_WIDTH - SIDE_PANEL_WIDTH - 20
+        panel_x = 10
+        panel_y = WINDOW_HEIGHT - BOTTOM_HUD_HEIGHT - DIALOG_HEIGHT - 10
+        panel_height = DIALOG_HEIGHT
+        
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+        
+        # Draw panel background
+        self._draw_panel(panel_rect, "Comms Channel")
+        
+        # Calculate visible dialogue entries (most recent first)
+        dialogue_entries = self.game_state.dialogue_history[-10:]  # Show last 10 entries
+        
+        # Display entries
+        entry_height = 30
+        content_y = panel_y + panel_height - (len(dialogue_entries) * entry_height) - 20
+        
+        for entry in dialogue_entries:
+            # Determine text color based on speaker
+            text_color = COLORS['text']
+            if entry['speaker'] == "SYSTEM":
+                text_color = COLORS['warning']
+            elif entry['speaker'] == self.game_state.player_faction.value:
+                text_color = COLORS['success']
+            elif not entry.get('success', True):
+                text_color = COLORS['failure']
+            
+            # Format entry text
+            entry_text = f"{entry['speaker']}: {entry['text']}"
+            
+            # Render text
+            text_surf = self.dialog_font.render(entry_text, True, text_color)
+            text_rect = text_surf.get_rect(topleft=(panel_x + 20, content_y))
+            
+            # Draw this entry
+            self.screen.blit(text_surf, text_rect)
+            content_y += entry_height
+    
+    def _draw_ai_turn_overlay(self):
+        """Draw the AI turn overlay with actions taken by the AI."""
         if not self.game_state:
             return
             
-        rect = pygame.Rect(20, TOP_HUD_HEIGHT + 240,
-                          SIDE_PANEL_WIDTH,
-                          WINDOW_HEIGHT - TOP_HUD_HEIGHT - BOTTOM_HUD_HEIGHT - 260)
-        self._draw_panel(rect, "COMMS")
+        # Draw semi-transparent overlay covering the entire screen
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((10, 12, 14, 200))  # Dark overlay
+        self.screen.blit(overlay, (0, 0))
         
-        # Get the last 8 dialogue entries (most recent)
-        latest_messages = self.game_state.dialogue_history[-8:]
+        # Draw title
+        title_text = f"{self.game_state.ai_faction.value} ACTIONS"
+        title_surf = self.title_font.render(title_text, True, (255, 100, 100))  # Red text
+        title_rect = title_surf.get_rect(center=(WINDOW_WIDTH//2, 150))
+        self.screen.blit(title_surf, title_rect)
         
-        # Start drawing from the top of the panel, with newest messages at the top
-        y = rect.top + 50  # Start at the top, leaving some padding
-        max_width = rect.width - 50  # Account for padding
+        # Draw AI actions
+        actions = self.game_state.ai_last_turn_actions
         
-        # Process messages in reverse so newest is at top
-        for entry in reversed(latest_messages):
-            # Speaker
-            color = COLORS['success'] if entry.get('success', True) else COLORS['failure']
-            speaker = self.hud_font.render(f"{entry['speaker']}:", True, color)
-            self.screen.blit(speaker, (rect.left + 20, y))
-            y += 25
-            
-            # Message with word wrapping
-            words = entry['text'].split(' ')
-            message_lines = []
-            current_line = ""
-            
-            for word in words:
-                test_line = current_line + " " + word if current_line else word
-                test_surface = self.dialog_font.render(test_line, True, COLORS['text'])
+        if not actions:
+            no_action_surf = self.menu_font.render("No actions taken this turn.", True, COLORS['text'])
+            no_action_rect = no_action_surf.get_rect(center=(WINDOW_WIDTH//2, WINDOW_HEIGHT//2))
+            self.screen.blit(no_action_surf, no_action_rect)
+        else:
+            # Draw each action
+            y_start = WINDOW_HEIGHT//2 - (len(actions) * 50)//2
+            for i, action in enumerate(actions):
+                y_pos = y_start + i * 60
                 
-                if test_surface.get_width() <= max_width:
-                    current_line = test_line
-                else:
-                    if current_line:
-                        message_lines.append(current_line)
-                    current_line = word
+                # Action name and result
+                action_text = f"{action['action']} - {action['category']}"
+                result_text = "Success" if action['success'] else "Failed"
+                
+                action_surf = self.menu_font.render(action_text, True, COLORS['text'])
+                result_surf = self.menu_font.render(result_text, True, 
+                                                  COLORS['success'] if action['success'] else COLORS['failure'])
+                
+                action_rect = action_surf.get_rect(center=(WINDOW_WIDTH//2, y_pos))
+                result_rect = result_surf.get_rect(center=(WINDOW_WIDTH//2, y_pos + 30))
+                
+                self.screen.blit(action_surf, action_rect)
+                self.screen.blit(result_surf, result_rect)
+                
+                # Draw effects if any
+                if 'effects' in action and action['effects']:
+                    effect_text = ", ".join(action['effects'][:2])  # Show first 2 effects only
+                    if len(action['effects']) > 2:
+                        effect_text += "..."
+                        
+                    effect_surf = self.dialog_font.render(effect_text, True, COLORS['text_dim'])
+                    effect_rect = effect_surf.get_rect(center=(WINDOW_WIDTH//2, y_pos + 50))
+                    self.screen.blit(effect_surf, effect_rect)
+        
+        # Draw continue prompt
+        continue_text = "Press A to continue"
+        continue_surf = self.dialog_font.render(continue_text, True, COLORS['text'])
+        continue_rect = continue_surf.get_rect(center=(WINDOW_WIDTH//2, WINDOW_HEIGHT - 150))
+        self.screen.blit(continue_surf, continue_rect)
+        
+    def _draw_game_history(self):
+        """Draw a full-screen history log panel."""
+        if not self.game_state or not hasattr(self.game_state, 'game_history'):
+            return
             
-            if current_line:
-                message_lines.append(current_line)
+        # Create semi-transparent background
+        bg_surface = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        bg_surface.fill((10, 12, 14, 230))  # Dark, semi-transparent background
+        self.screen.blit(bg_surface, (0, 0))
+        
+        # Define panel dimensions
+        panel_width = WINDOW_WIDTH - 200
+        panel_height = WINDOW_HEIGHT - 200
+        panel_x = (WINDOW_WIDTH - panel_width) // 2
+        panel_y = (WINDOW_HEIGHT - panel_height) // 2
+        
+        # Draw panel
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+        self._draw_panel(panel_rect, "GAME HISTORY")
+        
+        # Get history entries
+        history_entries = self.game_state.game_history
+        
+        # Calculate pagination
+        entries_per_page = self.history_entries_per_page
+        total_pages = max(1, (len(history_entries) + entries_per_page - 1) // entries_per_page)
+        
+        # Get current page entries
+        start_idx = self.history_page * entries_per_page
+        end_idx = min(start_idx + entries_per_page, len(history_entries))
+        current_page_entries = history_entries[start_idx:end_idx]
+        
+        # Draw entries
+        entry_y = panel_y + 50
+        entry_x = panel_x + 30
+        line_height = 24
+        
+        for i, entry in enumerate(current_page_entries):
+            # Format: [Turn X] Message
+            turn_text = f"[Turn {entry.get('turn', '?')}]"
+            turn_surf = self.hud_font.render(turn_text, True, COLORS['ap'])
+            self.screen.blit(turn_surf, (entry_x, entry_y))
             
-            # Draw each line
-            for line in message_lines:
-                text_surf = self.dialog_font.render(line, True, COLORS['text'])
-                self.screen.blit(text_surf, (rect.left + 30, y))
-                y += 20
+            # Entry message
+            msg_surf = self.hud_font.render(entry.get('message', 'Unknown event'), True, COLORS['text'])
+            self.screen.blit(msg_surf, (entry_x + 100, entry_y))
             
-            y += 15  # Add space between dialogue entries
-            
-            # Check if we've gone beyond the bottom of the panel
-            if y > rect.bottom - 20:
-                break
+            entry_y += line_height
+        
+        # Draw pagination info
+        page_text = f"Page {self.history_page + 1}/{total_pages}"
+        page_surf = self.hud_font.render(page_text, True, COLORS['text_dim'])
+        page_rect = page_surf.get_rect(center=(WINDOW_WIDTH//2, panel_y + panel_height - 30))
+        self.screen.blit(page_surf, page_rect)
+        
+        # Draw navigation hints
+        hint_y = panel_y + panel_height + 20
+        
+        # Up/down navigation hint
+        nav_hint = "↑/↓: Navigate Pages"
+        nav_surf = self.hud_font.render(nav_hint, True, COLORS['text'])
+        nav_rect = nav_surf.get_rect(center=(WINDOW_WIDTH//2 - 150, hint_y))
+        self.screen.blit(nav_surf, nav_rect)
+        
+        # Back hint
+        back_hint = "ESC/B: Return to Game"
+        back_surf = self.hud_font.render(back_hint, True, COLORS['text'])
+        back_rect = back_surf.get_rect(center=(WINDOW_WIDTH//2 + 150, hint_y))
+        self.screen.blit(back_surf, back_rect)
     
     def _draw_tactical_panel(self):
         """Draw the tactical information panel."""
@@ -690,6 +817,7 @@ class TacticalUI:
                 ("←/→", "Category"),
                 ("Enter/A", "Select"),
                 ("Y", "Special"),
+                ("H", "History"),
                 ("Q", "Exit")
             ]
         elif self.ui_state == UIState.ACTION_MENU:
@@ -703,33 +831,48 @@ class TacticalUI:
                 ("Y", "Confirm Exit"),
                 ("N", "Cancel")
             ]
+        elif self.ui_state == UIState.HISTORY_LOG:
+            return [
+                ("↑/↓", "Navigate"),
+                ("Esc/B", "Back")
+            ]
+        elif self.ui_state == UIState.AI_TURN:
+            return [
+                ("Enter/A", "Continue")
+            ]
         return []
     
     def draw(self):
-        """Draw the current game state."""
-        # Clear screen
+        """Main draw method - renders the current UI state."""
+        # Clear the screen
         self.screen.fill(COLORS['background'])
         
-        # Draw main game interface if active
-        if self.game_state:
-            self._draw_top_hud()
-            self._draw_objectives_panel()
-            self._draw_dialogue_panel()
-            self._draw_tactical_panel()
-            self._draw_history_panel()
-            self._draw_bottom_hud()
+        # Draw tactical grid background
+        self._draw_tactical_grid()
         
-        # Draw current UI state
+        # Draw based on current UI state
         if self.ui_state == UIState.SIDE_SELECT:
             self._draw_side_selection()
         elif self.ui_state == UIState.FACTION_SELECT:
             self._draw_faction_selection()
+        elif self.ui_state == UIState.MAIN_GAME:
+            self._draw_main_game()
         elif self.ui_state == UIState.ACTION_MENU:
-            # No need to call draw again, just draw the action menu on top
+            # Draw the main game as background for action menu
+            self._draw_main_game()
             self._draw_action_menu()
         elif self.ui_state == UIState.EXIT_CONFIRM:
-            # No need to call draw again, just draw the exit confirm on top
-            self._draw_exit_confirm()
+            # Draw the main game as background for exit confirmation
+            self._draw_main_game()
+            self._draw_exit_confirmation()
+        elif self.ui_state == UIState.AI_TURN:
+            # Draw the main game as background for AI turn
+            self._draw_main_game()
+            self._draw_ai_turn_overlay()
+        elif self.ui_state == UIState.HISTORY_LOG:
+            # Draw the main game as background for history log
+            self._draw_main_game()
+            self._draw_game_history()
         
         # Update display
         pygame.display.flip()
@@ -793,757 +936,16 @@ class TacticalUI:
             
             y += 100  # Increased spacing to accommodate descriptions
     
-    def toggle_fullscreen(self):
-        """Toggle between fullscreen and windowed mode."""
-        try:
-            # Store current display flags
-            current_flags = self.screen.get_flags()
-            
-            if not self.is_fullscreen:
-                # Switch to fullscreen
-                pygame.display.quit()
-                pygame.display.init()
-                self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN | pygame.HWSURFACE | pygame.DOUBLEBUF)
-                self.is_fullscreen = True
-            else:
-                # Return to windowed mode
-                pygame.display.quit()
-                pygame.display.init()
-                self.screen = pygame.display.set_mode(self.windowed_size, pygame.RESIZABLE)
-                self.is_fullscreen = False
-            
-            # Reinitialize fonts after display mode change
-            self._init_fonts()
-            
-            # Force a complete redraw
-            self.draw()
-            pygame.display.flip()
-            
-        except Exception as e:
-            print(f"Error toggling fullscreen: {e}")
-            # Fallback to windowed mode if something goes wrong
-            self.screen = pygame.display.set_mode(self.windowed_size, pygame.RESIZABLE)
-            self.is_fullscreen = False
-            self._init_fonts()
-            self.draw()
-            pygame.display.flip()
+    def _draw_main_game(self):
+        """Draw the main game interface."""
+        self._draw_top_hud()
+        self._draw_objectives_panel()
+        self._draw_dialogue_panel()
+        self._draw_tactical_panel()
+        self._draw_history_panel()
+        self._draw_bottom_hud()
     
-    def handle_resize(self, event):
-        """Handle window resize events."""
-        if not self.is_fullscreen:
-            self.windowed_size = event.size
-            self.screen = pygame.display.set_mode(self.windowed_size, pygame.RESIZABLE)
-    
-    def _handle_input(self, event):
-        """Process a single input event."""
-        if event.type == pygame.QUIT:
-            self.running = False
-            
-        elif event.type == pygame.KEYDOWN:
-            # Check for escape key
-            if event.key == pygame.K_ESCAPE:
-                if self.ui_state == UIState.MAIN_GAME:
-                    # Open exit confirmation
-                    self.ui_state = UIState.EXIT_CONFIRM
-                    self.selected_index = 0  # Default to 'No'
-                elif self.ui_state == UIState.ACTION_MENU:
-                    # Return to main game
-                    self.ui_state = UIState.MAIN_GAME
-                    # Reset action selection
-                    self.selected_action_index = -1
-                elif self.ui_state == UIState.EXIT_CONFIRM:
-                    # Cancel exit confirmation
-                    self.ui_state = UIState.MAIN_GAME
-                elif self.ui_state == UIState.FACTION_SELECT:
-                    # Return to side selection
-                    self.ui_state = UIState.SIDE_SELECT
-                    
-            # Check for category navigation keys (Q/E)
-            elif event.key == pygame.K_q:
-                if self.ui_state == UIState.MAIN_GAME or self.ui_state == UIState.ACTION_MENU:
-                    # In action menu or main game, Q rotates categories left
-                    num_categories = len(ActionCategory)
-                    self.current_category_index = (self.current_category_index - 1) % num_categories
-                    # Reset action selection when changing category
-                    self.selected_action_index = -1
-                    
-                    # Debug prints
-                    current_category = list(ActionCategory)[self.current_category_index]
-                    actions = self.available_actions.get(current_category, [])
-                    print(f"Category changed to: {current_category.value}, {len(actions)} actions available")
-                
-                elif self.ui_state not in [UIState.SIDE_SELECT, UIState.FACTION_SELECT]:
-                    # Q for quit in other states
-                    self.ui_state = UIState.EXIT_CONFIRM
-                    self.selected_index = 0  # Default to 'No'
-            
-            # E key for rotating categories right
-            elif event.key == pygame.K_e:
-                if self.ui_state == UIState.MAIN_GAME or self.ui_state == UIState.ACTION_MENU:
-                    num_categories = len(ActionCategory)
-                    self.current_category_index = (self.current_category_index + 1) % num_categories
-                    # Reset action selection when changing category
-                    self.selected_action_index = -1
-                    
-                    # Debug prints
-                    current_category = list(ActionCategory)[self.current_category_index]
-                    actions = self.available_actions.get(current_category, [])
-                    print(f"Category changed to: {current_category.value}, {len(actions)} actions available")
-            
-            # Handle directional input
-            elif event.key in [pygame.K_UP, pygame.K_w]:
-                self._handle_direction(InputDirection.UP)
-            elif event.key in [pygame.K_DOWN, pygame.K_s]:
-                self._handle_direction(InputDirection.DOWN)
-            elif event.key in [pygame.K_LEFT, pygame.K_a]:
-                self._handle_direction(InputDirection.LEFT)
-            elif event.key in [pygame.K_RIGHT, pygame.K_d]:
-                self._handle_direction(InputDirection.RIGHT)
-            
-            # Handle numeric keys for action selection (optional shortcut)
-            elif self.ui_state == UIState.ACTION_MENU and event.key in [pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4]:
-                index = event.key - pygame.K_1  # Convert key to index (0-3)
-                self.selected_action_index = index  # Just highlight the option
-                # Don't execute immediately, let user confirm with enter
-            
-            # Handle confirmation (ENTER or SPACE)
-            elif event.key in [pygame.K_RETURN, pygame.K_SPACE]:
-                self._handle_confirm()
-                
-            # Handle yes/no in exit confirmation
-            elif self.ui_state == UIState.EXIT_CONFIRM:
-                if event.key == pygame.K_y:
-                    self.running = False  # Exit on Y
-                elif event.key == pygame.K_n:
-                    self.ui_state = UIState.MAIN_GAME  # Return to game on N
-
-    def _handle_direction(self, direction):
-        """Handle a directional input based on the current UI state."""
-        # Get current time for D-pad cooldown
-        current_time = pygame.time.get_ticks()
-        
-        # Check if we're within the D-pad cooldown period or repeating the same direction
-        if current_time - self.last_dpad_input_time <= self.dpad_cooldown:
-            return False
-            
-        # Update the D-pad input time
-        self.last_dpad_input_time = current_time
-        
-        # Store last direction to help prevent rapid repeats
-        old_direction = self.last_direction
-        self.last_direction = direction
-        
-        # Side selection state
-        if self.ui_state == UIState.SIDE_SELECT:
-            if direction == InputDirection.UP:
-                self.selected_index = (self.selected_index - 1) % len(self.sides)
-            elif direction == InputDirection.DOWN:
-                self.selected_index = (self.selected_index + 1) % len(self.sides)
-                
-        # Faction selection state
-        elif self.ui_state == UIState.FACTION_SELECT:
-            factions = self.faction_groups[self.selected_side]
-            
-            if direction == InputDirection.UP:
-                self.selected_index = (self.selected_index - 1) % len(factions)
-            elif direction == InputDirection.DOWN:
-                self.selected_index = (self.selected_index + 1) % len(factions)
-                
-        # Main game state
-        elif self.ui_state == UIState.MAIN_GAME:
-            # Left/Right (A/D) used to change category
-            if direction in [InputDirection.LEFT, InputDirection.RIGHT]:
-                num_categories = len(ActionCategory)
-                delta = 1 if direction == InputDirection.RIGHT else -1
-                self.current_category_index = (self.current_category_index + delta) % num_categories
-                
-                # Debug prints
-                current_category = list(ActionCategory)[self.current_category_index]
-                actions = self.available_actions.get(current_category, [])
-                print(f"Category changed to: {current_category.value}, {len(actions)} actions available")
-                
-            # Any vertical movement opens the action menu
-            elif direction in [InputDirection.UP, InputDirection.DOWN]:
-                self.ui_state = UIState.ACTION_MENU
-                # Initialize selected action to -1 (no selection)
-                self.selected_action_index = -1
-                
-        # Action menu state
-        elif self.ui_state == UIState.ACTION_MENU:
-            # Direction keys highlight the corresponding action
-            if direction in [InputDirection.UP, InputDirection.DOWN, InputDirection.LEFT, InputDirection.RIGHT]:
-                # Map directions to action indices (up=0, right=1, down=2, left=3)
-                direction_index_map = {
-                    InputDirection.UP: 0,
-                    InputDirection.RIGHT: 1,
-                    InputDirection.DOWN: 2,
-                    InputDirection.LEFT: 3
-                }
-                
-                new_index = direction_index_map[direction]
-                
-                # Get current category and ensure we have actions before setting
-                current_category = list(ActionCategory)[self.current_category_index]
-                actions = self.available_actions.get(current_category, [])
-                
-                # Only set if the index is valid (within the available actions)
-                if new_index < len(actions):
-                    self.selected_action_index = new_index
-                    
-                    # Debug print the selected action
-                    action = actions[self.selected_action_index]
-                    print(f"Selected action: {action.name} ({action.action_points} AP)")
-
-        # Exit confirmation state
-        elif self.ui_state == UIState.EXIT_CONFIRM:
-            if direction == InputDirection.LEFT:
-                self.selected_index = 0  # No (don't exit)
-            elif direction == InputDirection.RIGHT:
-                self.selected_index = 1  # Yes (exit)
-        
-        return True
-
-    def _handle_confirm(self):
-        """Handle confirmation button press."""
-        if self.ui_state == UIState.SIDE_SELECT:
-            self.selected_side = self.sides[self.selected_index]
-            self.ui_state = UIState.FACTION_SELECT
-            self.selected_index = 0
-            return True
-
-        elif self.ui_state == UIState.FACTION_SELECT:
-            # Get the correct faction from the faction group for the selected side
-            selected_faction = self.faction_groups[self.selected_side][self.selected_index]
-            self.game_state = GameState(selected_faction)
-            
-            # Initialize available actions for the selected faction
-            self._update_available_actions()
-            
-            # Debug printout of available actions
-            print(f"Available actions for {selected_faction.value}:")
-            for category in ActionCategory:
-                actions = self.available_actions.get(category, [])
-                print(f"  {category.value}: {len(actions)} actions")
-                for action in actions:
-                    print(f"    - {action.name} ({action.action_points} AP)")
-            
-            self.ui_state = UIState.MAIN_GAME
-            return True
-            
-        # Action menu - execute the highlighted action if one is selected
-        elif self.ui_state == UIState.ACTION_MENU and hasattr(self, 'selected_action_index'):
-            if self.selected_action_index >= 0:
-                current_category = list(ActionCategory)[self.current_category_index]
-                actions = self.available_actions.get(current_category, [])
-                
-                if 0 <= self.selected_action_index < len(actions):
-                    action = actions[self.selected_action_index]
-                    self._execute_action(action)
-                    return True
-            
-            # If no action is selected, do nothing on confirm
-            return False
-
-        elif self.ui_state == UIState.EXIT_CONFIRM:
-            # Handle confirmation in exit screen
-            if self.selected_index == 1:
-                self.running = False  # Exit the game if "Yes" selected
-            else:
-                self.ui_state = UIState.MAIN_GAME  # Return to game if "No" selected
-            return True
-            
-        return True
-
-    def _execute_action(self, action):
-        """Execute an action and update game state."""
-        if not self.game_state:
-            print("No game state to execute action on!")
-            return
-            
-        # Check if we have enough action points
-        if action.action_points > self.game_state.action_points:
-            print(f"Not enough action points! Need {action.action_points}, have {self.game_state.action_points}")
-            return
-            
-        # Execute the action (simulate success/failure)
-        success = random.random() < action.success_chance
-        
-        # Apply effects based on success
-        effects = []
-        if success:
-            for effect in action.effects:
-                effects.append(effect.value)
-                # Apply each effect (could be more detailed in a real implementation)
-                if effect.value == "TRUST_INCREASE":
-                    self.game_state.trust_level = min(1.0, self.game_state.trust_level + 0.1)
-                elif effect.value == "TENSION_DECREASE":
-                    self.game_state.tension_level = max(0.0, self.game_state.tension_level - 0.1)
-                elif effect.value == "TACTICAL_ADVANTAGE":
-                    # This would do something specific in the real game
-                    pass
-        
-        # Update game state
-        self.game_state.action_points -= action.action_points
-        
-        # Add to game history
-        self.game_state.game_history.append({
-            "turn": self.game_state.turn,
-            "action": action.name,
-            "success": success,
-            "effects": effects
-        })
-        
-        # Add dialogue if applicable
-        if hasattr(action, 'dialogue_text') and action.dialogue_text:
-            dialogue_text = action.dialogue_text
-        else:
-            # Create default dialogue message if none exists
-            dialogue_text = f"Executing: {action.name}"
-            
-        # Add the dialogue message
-        self._add_dialogue_message(self.game_state.player_faction.value, dialogue_text, success)
-        
-        # Print debug info
-        print(f"Action executed: {action.name} - Success: {success}")
-        print(f"  Effects: {effects}")
-        print(f"  Remaining AP: {self.game_state.action_points}")
-            
-        # Update the UI state
-        self.ui_state = UIState.MAIN_GAME
-        
-        # Check if we've used all action points and need to end the turn
-        if self.game_state.action_points <= 0:
-            self._end_turn()
-
-    def _add_dialogue_message(self, speaker, text, success=True):
-        """Add a message to the dialogue history."""
-        if not self.game_state:
-            return
-            
-        message = {
-            "turn": self.game_state.turn,
-            "speaker": speaker,
-            "text": text,
-            "success": success,
-            "timestamp": pygame.time.get_ticks()  # Add timestamp for sorting
-        }
-        
-        # Add to dialogue history
-        self.game_state.dialogue_history.append(message)
-        
-        # Debug print
-        print(f"COMMS: {speaker}: {text}")
-        
-    def _end_turn(self):
-        """End the current turn and move to the next one."""
-        if not self.game_state:
-            return
-            
-        # Increment turn counter
-        self.game_state.turn += 1
-        
-        # Reset action points
-        self.game_state.action_points = 3  # Standard AP
-        
-        # Apply any extra AP gained during the previous turn
-        if hasattr(self.game_state, 'next_turn_extra_ap') and self.game_state.next_turn_extra_ap > 0:
-            self.game_state.action_points += self.game_state.next_turn_extra_ap
-            self.game_state.next_turn_extra_ap = 0
-        
-        # Update available actions for the new turn
-        self._update_available_actions()
-        
-        # Add turn transition message to dialogue
-        self._add_dialogue_message("SYSTEM", f"Turn {self.game_state.turn} begins. You have {self.game_state.action_points} action points.")
-        
-        print(f"Turn ended. Now turn {self.game_state.turn} with {self.game_state.action_points} AP.")
-
-    def _update_available_actions(self):
-        """Update the available actions based on the current game state."""
-        if not self.game_state or not self.action_system:
-            return
-            
-        # Reset available actions
-        self.available_actions = {}
-        
-        # Initialize all categories
-        for category in ActionCategory:
-            self.available_actions[category] = []
-            
-        # Get actions from action system for the player's faction
-        faction_actions = self.action_system.get_available_actions(self.game_state)
-        
-        # Add actions to their respective categories
-        for category in ActionCategory:
-            if category in faction_actions:
-                self.available_actions[category] = faction_actions[category]
-                
-        # Debug print the available actions
-        print("\nUpdated available actions:")
-        for category, actions in self.available_actions.items():
-            print(f"Category {category.value}: {len(actions)} actions available")
-            for action in actions:
-                print(f"  - {action.name} ({action.action_points} AP)")
-                
-        # Reset category index if needed
-        if self.current_category_index >= len(ActionCategory):
-            self.current_category_index = 0
-            
-    def _handle_back_button(self):
-        """Handle B button press for backing out of screens."""
-        print("Handling B button (back) functionality")
-        
-        # Logic for different UI states
-        if self.ui_state == UIState.MAIN_GAME:
-            print("Going from main game to exit confirm")
-            self.ui_state = UIState.EXIT_CONFIRM
-            self.selected_index = 0  # Default to 'No'
-            return True
-            
-        elif self.ui_state == UIState.ACTION_MENU:
-            print("Going from action menu to main game")
-            self.ui_state = UIState.MAIN_GAME
-            # Reset action selection
-            self.selected_action_index = -1
-            return True
-            
-        elif self.ui_state == UIState.EXIT_CONFIRM:
-            print("Canceling exit confirmation")
-            self.ui_state = UIState.MAIN_GAME
-            return True
-            
-        elif self.ui_state == UIState.FACTION_SELECT:
-            print("Going back to side selection")
-            self.ui_state = UIState.SIDE_SELECT
-            return True
-            
-        return False
-
-    def _handle_controller_events(self, events):
-        """Handle controller input events."""
-        # Initialize controllers if available
-        has_controllers = self._setup_controllers()
-        if not has_controllers:
-            return False
-            
-        # Track if any controller input was handled
-        handled = False
-        
-        # Get current time for handling input cooldown
-        current_time = pygame.time.get_ticks()
-        
-        # Process events
-        for event in events:
-            # Handle controller button presses
-            if event.type == pygame.JOYBUTTONDOWN:
-                # Print button info for debugging
-                button_id = event.button
-                print(f"Button pressed: {button_id}")
-                
-                # Check if this button is in cooldown
-                if current_time - self.last_button_press.get(button_id, 0) <= self.button_cooldown:
-                    print(f"Button {button_id} in cooldown, ignoring...")
-                    continue
-                
-                # Update the last press time for this button
-                self.last_button_press[button_id] = current_time
-                
-                # D-pad as button detection for Xbox Elite 2 Controller
-                # Button mapping may vary by controller and platform
-                if button_id == 11:  # D-pad UP
-                    print("D-pad UP button pressed")
-                    if self._handle_direction(InputDirection.UP):
-                        handled = True
-                        return handled
-                elif button_id == 12:  # D-pad DOWN
-                    print("D-pad DOWN button pressed")
-                    if self._handle_direction(InputDirection.DOWN):
-                        handled = True
-                        return handled
-                elif button_id == 13:  # D-pad LEFT
-                    print("D-pad LEFT button pressed")
-                    if self._handle_direction(InputDirection.LEFT):
-                        handled = True
-                        return handled
-                elif button_id == 14:  # D-pad RIGHT
-                    print("D-pad RIGHT button pressed")
-                    if self._handle_direction(InputDirection.RIGHT):
-                        handled = True
-                        return handled
-                
-                # A button (typically button 0) for confirmation
-                if button_id == 0:  # A button (confirm)
-                    print("A button pressed - confirming selection")
-                    self._handle_confirm()
-                    handled = True
-                    
-                # B button (typically button 1) for back/cancel
-                elif button_id == 1:  # B button (back)
-                    print("B button pressed - going back")
-                    handled = self._handle_back_button()
-                
-                # X/Y buttons (typically 2/3) for category selection
-                elif button_id == 2:  # X button - previous category
-                    print("X button pressed - previous category")
-                    if self.ui_state in [UIState.MAIN_GAME, UIState.ACTION_MENU]:
-                        num_categories = len(ActionCategory)
-                        self.current_category_index = (self.current_category_index - 1) % num_categories
-                        # Reset action selection when changing category
-                        self.selected_action_index = -1
-                        
-                        # Debug prints
-                        current_category = list(ActionCategory)[self.current_category_index]
-                        actions = self.available_actions.get(current_category, [])
-                        print(f"X button - Category changed to: {current_category.value}, {len(actions)} actions available")
-                    handled = True
-                    
-                elif button_id == 3:  # Y button - next category
-                    print("Y button pressed - next category")
-                    if self.ui_state in [UIState.MAIN_GAME, UIState.ACTION_MENU]:
-                        num_categories = len(ActionCategory)
-                        self.current_category_index = (self.current_category_index + 1) % num_categories
-                        # Reset action selection when changing category
-                        self.selected_action_index = -1
-                        
-                        # Debug prints
-                        current_category = list(ActionCategory)[self.current_category_index]
-                        actions = self.available_actions.get(current_category, [])
-                        print(f"Y button - Category changed to: {current_category.value}, {len(actions)} actions available")
-                    handled = True
-                
-                # Shoulder buttons (LB/RB - 4/5) for category navigation
-                elif button_id == 4:  # LB - previous category
-                    print("LB button pressed - previous category")
-                    if self.ui_state in [UIState.MAIN_GAME, UIState.ACTION_MENU]:
-                        num_categories = len(ActionCategory)
-                        self.current_category_index = (self.current_category_index - 1) % num_categories
-                        # Reset action selection when changing category
-                        self.selected_action_index = -1
-                        
-                        # Debug prints
-                        current_category = list(ActionCategory)[self.current_category_index]
-                        actions = self.available_actions.get(current_category, [])
-                        print(f"LB - Category changed to: {current_category.value}, {len(actions)} actions available")
-                    handled = True
-                
-                elif button_id == 5:  # RB - next category
-                    print("RB button pressed - next category")
-                    if self.ui_state in [UIState.MAIN_GAME, UIState.ACTION_MENU]:
-                        num_categories = len(ActionCategory)
-                        self.current_category_index = (self.current_category_index + 1) % num_categories
-                        # Reset action selection when changing category
-                        self.selected_action_index = -1
-                        
-                        # Debug prints
-                        current_category = list(ActionCategory)[self.current_category_index]
-                        actions = self.available_actions.get(current_category, [])
-                        print(f"RB - Category changed to: {current_category.value}, {len(actions)} actions available")
-                    handled = True
-                
-                # Start button (typically button 7) for exit
-                elif button_id == 7:  # Start button (exit)
-                    print("Start button pressed - exit menu")
-                    if self.ui_state not in [UIState.SIDE_SELECT, UIState.FACTION_SELECT, UIState.EXIT_CONFIRM]:
-                        self.ui_state = UIState.EXIT_CONFIRM
-                        self.selected_index = 0  # Default to 'No'
-                    handled = True
-            
-            # Handle D-pad input (hat motion) with high priority
-            elif event.type == pygame.JOYHATMOTION:
-                hat_x, hat_y = event.value
-                print(f"Hat motion detected: {hat_x}, {hat_y}")
-                
-                if hat_x != 0 or hat_y != 0:
-                    # Convert hat values to InputDirection
-                    direction_handled = False
-                    
-                    if hat_y > 0:
-                        print("D-pad UP from hat motion")
-                        direction_handled = self._handle_direction(InputDirection.UP)
-                    elif hat_y < 0:
-                        print("D-pad DOWN from hat motion")
-                        direction_handled = self._handle_direction(InputDirection.DOWN)
-                    elif hat_x > 0:
-                        print("D-pad RIGHT from hat motion")
-                        direction_handled = self._handle_direction(InputDirection.RIGHT)
-                    elif hat_x < 0:
-                        print("D-pad LEFT from hat motion")
-                        direction_handled = self._handle_direction(InputDirection.LEFT)
-                    
-                    if direction_handled:
-                        handled = True
-                        return handled
-                    
-            # Handle analog stick input
-            elif event.type == pygame.JOYAXISMOTION:
-                # Left analog stick (typically axes 0 and 1)
-                if event.axis in [0, 1]:
-                    # Only process if outside cooldown period
-                    if current_time - self.last_input_time > self.input_cooldown:
-                        # Check if axis value exceeds deadzone
-                        if abs(event.value) > self.stick_deadzone:
-                            direction_handled = False
-                            
-                            if event.axis == 0:  # Horizontal axis
-                                if event.value > self.stick_deadzone:
-                                    print("Stick RIGHT detected")
-                                    direction_handled = self._handle_direction(InputDirection.RIGHT)
-                                elif event.value < -self.stick_deadzone:
-                                    print("Stick LEFT detected")
-                                    direction_handled = self._handle_direction(InputDirection.LEFT)
-                            elif event.axis == 1:  # Vertical axis
-                                if event.value > self.stick_deadzone:
-                                    print("Stick DOWN detected")
-                                    direction_handled = self._handle_direction(InputDirection.DOWN)
-                                elif event.value < -self.stick_deadzone:
-                                    print("Stick UP detected")
-                                    direction_handled = self._handle_direction(InputDirection.UP)
-                            
-                            if direction_handled:
-                                self.last_input_time = current_time
-                                handled = True
-                                return handled
-                
-                # Right analog stick for category navigation (axes 2 and 3 typically)
-                elif event.axis in [2, 3] and self.ui_state in [UIState.MAIN_GAME, UIState.ACTION_MENU]:
-                    # Only process if outside cooldown period
-                    if current_time - self.last_input_time > self.input_cooldown:
-                        # Only use horizontal movement for category navigation
-                        if event.axis == 2:  # Horizontal axis of right stick
-                            if abs(event.value) > self.stick_deadzone:
-                                num_categories = len(ActionCategory)
-                                if event.value > self.stick_deadzone:
-                                    # Right - next category
-                                    self.current_category_index = (self.current_category_index + 1) % num_categories
-                                    # Reset action selection when changing category
-                                    self.selected_action_index = -1
-                                    print("Right Stick RIGHT - Next Category")
-                                elif event.value < -self.stick_deadzone:
-                                    # Left - previous category
-                                    self.current_category_index = (self.current_category_index - 1) % num_categories
-                                    # Reset action selection when changing category
-                                    self.selected_action_index = -1
-                                    print("Right Stick LEFT - Previous Category")
-                                
-                                # Debug prints
-                                current_category = list(ActionCategory)[self.current_category_index]
-                                actions = self.available_actions.get(current_category, [])
-                                print(f"Category changed to: {current_category.value}, {len(actions)} actions available")
-                                
-                                self.last_input_time = current_time
-                                handled = True
-
-        return handled
-
-    def _poll_controllers(self):
-        """Actively poll controller inputs including D-pad regardless of events."""
-        if not self.controllers:
-            return False
-            
-        # Get current time
-        current_time = pygame.time.get_ticks()
-        
-        # Only poll if outside cooldown period
-        if current_time - self.last_dpad_input_time <= self.dpad_cooldown:
-            return False
-            
-        # Track if any input was handled
-        handled = False
-            
-        # For Xbox Elite and similar controllers where D-pad is buttons
-        # First check for button presses that might be D-pad
-        for joystick in self.controllers:
-            # Check D-pad as buttons - specifically for Xbox Elite 2 controller
-            if joystick.get_numbuttons() >= 15:  # Make sure it has enough buttons
-                # Check specific D-pad buttons (for Xbox Elite 2)
-                if joystick.get_button(11):  # UP
-                    print("Polling detected D-pad UP")
-                    if self._handle_direction(InputDirection.UP):
-                        self.last_dpad_input_time = current_time
-                        return True
-                elif joystick.get_button(12):  # DOWN
-                    print("Polling detected D-pad DOWN")
-                    if self._handle_direction(InputDirection.DOWN):
-                        self.last_dpad_input_time = current_time
-                        return True
-                elif joystick.get_button(13):  # LEFT
-                    print("Polling detected D-pad LEFT")
-                    if self._handle_direction(InputDirection.LEFT):
-                        self.last_dpad_input_time = current_time
-                        return True
-                elif joystick.get_button(14):  # RIGHT
-                    print("Polling detected D-pad RIGHT")
-                    if self._handle_direction(InputDirection.RIGHT):
-                        self.last_dpad_input_time = current_time
-                        return True
-            
-            # Check hat-based D-pads (traditional controllers)
-            if joystick.get_numhats() > 0:
-                for hat_idx in range(joystick.get_numhats()):
-                    hat_x, hat_y = joystick.get_hat(hat_idx)
-                    
-                    if hat_x != 0 or hat_y != 0:
-                        # Convert hat values to InputDirection
-                        if hat_y > 0:
-                            print("Polling detected D-pad UP via hat")
-                            if self._handle_direction(InputDirection.UP):
-                                self.last_dpad_input_time = current_time
-                                return True
-                        elif hat_y < 0:
-                            print("Polling detected D-pad DOWN via hat")
-                            if self._handle_direction(InputDirection.DOWN):
-                                self.last_dpad_input_time = current_time
-                                return True
-                        elif hat_x > 0:
-                            print("Polling detected D-pad RIGHT via hat")
-                            if self._handle_direction(InputDirection.RIGHT):
-                                self.last_dpad_input_time = current_time
-                                return True
-                        elif hat_x < 0:
-                            print("Polling detected D-pad LEFT via hat")
-                            if self._handle_direction(InputDirection.LEFT):
-                                self.last_dpad_input_time = current_time
-                                return True
-                    
-        # If we get here, no D-pad input was detected
-        return False
-
-    def run(self):
-        """Run the main game loop."""
-        self.running = True
-        
-        while self.running:
-            events = pygame.event.get()
-            
-            # Check for quit event
-            for event in events:
-                if event.type == pygame.QUIT:
-                    self.running = False
-                    break
-            
-            # First actively poll D-pad inputs directly regardless of events
-            dpad_handled = self._poll_controllers()
-            
-            # Handle controller events next (if D-pad polling didn't handle anything)
-            controller_handled = dpad_handled or self._handle_controller_events(events)
-            
-            # Handle keyboard events if controller didn't handle anything
-            if not controller_handled:
-                for event in events:
-                    self._handle_input(event)
-            
-            # Update game state
-            # (in the future, this would include animations, timers, etc.)
-            
-            # Draw everything
-            self.draw()
-            
-            # Cap framerate
-            self.clock.tick(60)
-        
-        pygame.quit()
-
-    def _draw_exit_confirm(self):
+    def _draw_exit_confirmation(self):
         """Draw the exit confirmation screen."""
         # Create semi-transparent overlay
         overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
@@ -1601,6 +1003,163 @@ class TacticalUI:
         hint_surf = self.hud_font.render(hint_text, True, COLORS['text'])
         hint_rect = hint_surf.get_rect(center=(WINDOW_WIDTH // 2, box_y + 200))
         self.screen.blit(hint_surf, hint_rect)
+
+    def _handle_back_button(self):
+        """Handle B button press for backing out of screens."""
+        print("Handling B button (back) functionality")
+        
+        # Logic for different UI states
+        if self.ui_state == UIState.MAIN_GAME:
+            print("Going from main game to exit confirm")
+            self.ui_state = UIState.EXIT_CONFIRM
+            self.selected_index = 0  # Default to 'No'
+            return True
+            
+        elif self.ui_state == UIState.ACTION_MENU:
+            print("Going from action menu to main game")
+            self.ui_state = UIState.MAIN_GAME
+            # Reset action selection
+            self.selected_action_index = -1
+            return True
+            
+        elif self.ui_state == UIState.EXIT_CONFIRM:
+            print("Canceling exit confirmation")
+            self.ui_state = UIState.MAIN_GAME
+            return True
+            
+        elif self.ui_state == UIState.FACTION_SELECT:
+            print("Going back to side selection")
+            self.ui_state = UIState.SIDE_SELECT
+            return True
+            
+        elif self.ui_state == UIState.AI_TURN:
+            print("Returning from AI turn to main game")
+            self.ui_state = UIState.MAIN_GAME
+            self.show_ai_turn = False
+            return True
+            
+        elif self.ui_state == UIState.HISTORY_LOG:
+            print("Returning from history log to main game")
+            self.ui_state = UIState.MAIN_GAME
+            return True
+            
+        return False
+
+    def _end_turn(self):
+        """End the current turn and process AI actions."""
+        if not self.game_state:
+            return
+            
+        # Process end of turn in game state
+        self.game_state.end_turn()
+        
+        # First check if the game is over
+        if self.game_state.game_over:
+            self._handle_game_over()
+            return
+        
+        # Display AI turn overlay after processing
+        if self.game_state.ai_last_turn_actions:
+            self.show_ai_turn = True
+            self.ui_state = UIState.AI_TURN
+        
+        # Update action points display
+        if self.game_state.next_turn_extra_ap > 0:
+            self.game_state.action_points += self.game_state.next_turn_extra_ap
+            self.game_state.next_turn_extra_ap = 0
+        
+        # Update available actions for the new turn
+        self._update_available_actions()
+        
+        # Add turn transition message to dialogue
+        self._add_dialogue_message("SYSTEM", f"Turn {self.game_state.turn} begins. You have {self.game_state.action_points} action points.")
+        
+        print(f"Turn ended. Now turn {self.game_state.turn} with {self.game_state.action_points} AP.")
+
+    def _handle_input(self):
+        """Process keyboard and controller input."""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+
+            # Handle keyboard input
+            elif event.type == pygame.KEYDOWN:
+                current_time = pygame.time.get_ticks()
+                
+                # Handle H key for history log
+                if event.key == pygame.K_h and self.ui_state == UIState.MAIN_GAME:
+                    print("Showing history log")
+                    self.ui_state = UIState.HISTORY_LOG
+                    self.history_page = 0  # Reset to first page
+                    return True
+                
+                # Handle ESC key
+                elif event.key == pygame.K_ESCAPE:
+                    if not self._handle_back_button():
+                        return False
+                
+                # Process other keyboard input if cooldown has elapsed
+                elif current_time - self.last_input_time > self.input_cooldown:
+                    if self.ui_state == UIState.SIDE_SELECT:
+                        if event.key in (pygame.K_UP, pygame.K_w):
+                            self.selected_index = max(0, self.selected_index - 1)
+                            self.last_input_time = current_time
+                        elif event.key in (pygame.K_DOWN, pygame.K_s):
+                            self.selected_index = min(len(self.sides) - 1, self.selected_index + 1)
+                            self.last_input_time = current_time
+                        elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                            self.selected_side = self.sides[self.selected_index]
+                            self.ui_state = UIState.FACTION_SELECT
+                            self.selected_index = 0
+                            self.last_input_time = current_time
+                    
+                    elif self.ui_state == UIState.FACTION_SELECT:
+                        factions = self.faction_groups[self.selected_side]
+                        if event.key in (pygame.K_UP, pygame.K_w):
+                            self.selected_index = max(0, self.selected_index - 1)
+                            self.last_input_time = current_time
+                        elif event.key in (pygame.K_DOWN, pygame.K_s):
+                            self.selected_index = min(len(factions) - 1, self.selected_index + 1)
+                            self.last_input_time = current_time
+                        elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                            self._select_faction(factions[self.selected_index])
+                            self.last_input_time = current_time
+                    
+                    elif self.ui_state == UIState.HISTORY_LOG:
+                        if event.key in (pygame.K_UP, pygame.K_w):
+                            self.history_page = max(0, self.history_page - 1)
+                            self.last_input_time = current_time
+                        elif event.key in (pygame.K_DOWN, pygame.K_s):
+                            total_pages = max(1, (len(self.game_state.game_history) + 
+                                                self.history_entries_per_page - 1) // 
+                                                self.history_entries_per_page)
+                            self.history_page = min(total_pages - 1, self.history_page + 1)
+                            self.last_input_time = current_time
+                    
+                    # For other UI states, add appropriate input handling here
+        
+        return True
+        
+    def run(self):
+        """Main game loop."""
+        running = True
+        clock = pygame.time.Clock()
+        
+        while running:
+            # Process input and check if we should continue
+            if not self._handle_input():
+                running = False
+                
+            # Update game state if needed
+            
+            # Draw everything
+            self.draw()
+            
+            # Cap the frame rate
+            clock.tick(60)
+        
+        # Clean up and exit
+        pygame.quit()
 
 def main():
     """Entry point for the tactical UI."""
