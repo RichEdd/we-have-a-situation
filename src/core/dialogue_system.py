@@ -290,6 +290,13 @@ class DialogueSystem:
                     2,
                     "Ask questions to learn more about their demands and situation",
                     0.7
+                ),
+                GameAction(
+                    "Assert Authority",
+                    ActionCategory.DIALOGUE,
+                    2,
+                    "Establish control over the conversation",
+                    0.6
                 )
             ],
             ActionCategory.RESOURCES: [
@@ -313,6 +320,13 @@ class DialogueSystem:
                     1,
                     "Position medical teams nearby",
                     1.0
+                ),
+                GameAction(
+                    "Allocate Resources",
+                    ActionCategory.RESOURCES,
+                    2,
+                    "Redistribute available resources for better efficiency",
+                    0.85
                 )
             ],
             ActionCategory.FORCE: [
@@ -336,6 +350,13 @@ class DialogueSystem:
                     2,
                     "Demonstrate tactical capabilities",
                     0.6
+                ),
+                GameAction(
+                    "Tactical Positioning",
+                    ActionCategory.FORCE,
+                    2,
+                    "Optimize unit positions for maximum coverage",
+                    0.75
                 )
             ],
             ActionCategory.TECH: [
@@ -359,6 +380,13 @@ class DialogueSystem:
                     1,
                     "Use thermal cameras to gather intel",
                     0.8
+                ),
+                GameAction(
+                    "Network Analysis",
+                    ActionCategory.TECH,
+                    2,
+                    "Analyze digital communications patterns",
+                    0.75
                 )
             ],
             ActionCategory.NEGOTIATION: [
@@ -382,6 +410,13 @@ class DialogueSystem:
                     1,
                     "Establish a timeline for resolution",
                     0.8
+                ),
+                GameAction(
+                    "Demand Concession",
+                    ActionCategory.NEGOTIATION,
+                    2,
+                    "Firmly request specific concessions",
+                    0.65
                 )
             ],
             ActionCategory.THREATS: [
@@ -405,6 +440,13 @@ class DialogueSystem:
                     3,
                     "Present final terms",
                     0.4
+                ),
+                GameAction(
+                    "Pressure Tactics",
+                    ActionCategory.THREATS,
+                    2,
+                    "Apply psychological pressure to force compliance",
+                    0.55
                 )
             ]
         }
@@ -413,9 +455,28 @@ class ActionSystem:
     def __init__(self):
         self.dialogue_system = DialogueSystem()
     
-    def get_available_actions(self, category: ActionCategory) -> List[GameAction]:
-        """Get available actions for the given category."""
-        return self.dialogue_system.dialogue_options.get(category, [])
+    def get_available_actions(self, param):
+        """Get available actions based on input parameter."""
+        # Check if the parameter is an ActionCategory
+        if isinstance(param, ActionCategory):
+            return self.dialogue_system.dialogue_options.get(param, [])
+        
+        # Otherwise assume it's a GameState
+        elif hasattr(param, 'action_points'):
+            game_state = param
+            available_actions = {category: [] for category in ActionCategory}
+            
+            # Add dialogue actions that the player can afford
+            for category, action_list in self.dialogue_system.dialogue_options.items():
+                available_actions[category] = []
+                for action in action_list:
+                    if action.action_points <= game_state.action_points:
+                        available_actions[category].append(action)
+            
+            return available_actions
+        
+        # Fallback to empty list
+        return []
 
     def _initialize_actions(self) -> Dict[ActionCategory, List[GameAction]]:
         actions = {category: [] for category in ActionCategory}
@@ -569,34 +630,6 @@ class ActionSystem:
         self._add_liberation_front_specials(actions)
         
         return actions
-    
-    def get_available_actions(self, game_state: GameState) -> Dict[ActionCategory, List[GameAction]]:
-        """Get available actions based on faction and current state."""
-        available_actions = {category: [] for category in ActionCategory}
-        
-        for category, action_list in self.actions.items():
-            for action in action_list:
-                if self._can_perform_action(action, game_state):
-                    available_actions[category].append(action)
-        
-        return available_actions
-    
-    def _can_perform_action(self, action: GameAction, game_state: GameState) -> bool:
-        """Check if an action can be performed based on requirements and faction."""
-        # Check action points
-        if action.action_points > game_state.action_points:
-            return False
-        
-        # Check faction-specific requirements
-        if action.faction_specific and game_state.player_faction not in action.faction_specific:
-            return False
-        
-        # Check resource requirements
-        for resource, amount in action.requirements.items():
-            if resource in game_state.resources and game_state.resources[resource] < amount:
-                return False
-        
-        return True
     
     def perform_action(self, action: GameAction, game_state: GameState) -> Dict:
         """Perform an action and return the results."""
