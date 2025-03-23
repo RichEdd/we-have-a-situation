@@ -17,8 +17,8 @@ class GameState:
         
         # Core metrics
         self.trust_level = 0.5
-        self.tension_level = 0.5
-        self.intel_level = 0.0
+        self.tension_level = 0.3
+        self.intel_level = 0.75
         
         # Resources
         self.resources = {

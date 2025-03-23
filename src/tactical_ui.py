@@ -244,7 +244,7 @@ class TacticalUI:
         metrics = [
             ("Trust", self.game_state.trust_level, COLORS['trust']),
             ("Tension", self.game_state.tension_level, COLORS['tension']),
-            ("Intel", self.game_state.intel_level, COLORS['intel'])
+            ("Morale", self.game_state.intel_level, COLORS['intel'])
         ]
         
         x = WINDOW_WIDTH//2 - 300
