@@ -938,22 +938,48 @@ class TacticalUI:
             
             y += 100  # Increased spacing to accommodate descriptions
     
-    def _select_faction(self, faction):
-        """Initialize game state with the selected faction."""
-        from core.game_state import GameState
+    def _select_faction(self):
+        """Select a faction and initialize the game state."""
+        # Get the factions for the selected side
+        factions = list(self.faction_groups[self.selected_side])
+        selected_faction = factions[self.selected_index]
+        print(f"Selected faction: {selected_faction}")  # Debug print
         
-        print(f"Selected faction: {faction.value}")
-        self.game_state = GameState(faction)
+        # Initialize game state with selected faction
+        self.game_state = GameState(selected_faction)
+        print(f"Game state initialized with faction: {self.game_state.player_faction}")  # Debug print
         
-        # Initialize action categories and available actions
-        self.available_actions = self.action_system.get_available_actions(self.game_state)
+        # Initialize AI opponent
+        self.game_state.init_ai_opponent()
+        print(f"AI opponent initialized: {self.game_state.ai_faction}")  # Debug print
+        
+        # Verify AI opponent initialization
+        if not self.game_state.ai_opponent:
+            print("Error: AI opponent not properly initialized!")  # Debug print
+            return
+            
+        # Update UI state
+        self.ui_state = UIState.MAIN_GAME
+        self._update_available_actions()
         
         # Add initial dialogue
-        self._add_dialogue_message("SYSTEM", f"Welcome, {faction.value} team. A hostage situation is in progress.")
-        self._add_dialogue_message("SYSTEM", "Your objective is to resolve the situation with minimal casualties.")
+        self._add_dialogue_message(
+            speaker="System",
+            text=f"Welcome, {selected_faction.value}. A hostage situation has developed.",
+            success=True
+        )
+        self._add_dialogue_message(
+            speaker="System",
+            text="Your objective is to resolve the situation with minimal casualties.",
+            success=True
+        )
         
-        # Move to the main game state
-        self.ui_state = UIState.MAIN_GAME
+        # Add initial AI dialogue
+        self._add_dialogue_message(
+            speaker=self.game_state.ai_faction.value,
+            text="We have control of the building and hostages. Do not test us.",
+            success=True
+        )
     
     def _add_dialogue_message(self, speaker, text, success=True):
         """Add a message to the dialogue history."""
@@ -1071,34 +1097,58 @@ class TacticalUI:
 
     def _end_turn(self):
         """End the current turn and process AI actions."""
+        print("Starting _end_turn in TacticalUI")  # Debug print
+        
         if not self.game_state:
+            print("Warning: No game state in _end_turn")  # Debug print
             return
             
+        # Show AI turn overlay
+        self.show_ai_turn = True
+        self.ui_state = UIState.AI_TURN
+        print("Set UI state to AI_TURN")  # Debug print
+            
         # Process end of turn in game state
+        print(f"Current turn: {self.game_state.turn}, Player AP: {self.game_state.action_points}")  # Debug print
         self.game_state.end_turn()
+        print(f"After end_turn - Turn: {self.game_state.turn}, Player AP: {self.game_state.action_points}")  # Debug print
         
-        # First check if the game is over
-        if self.game_state.game_over:
-            self._handle_game_over()
-            return
+        # Get AI actions from last turn
+        ai_actions = self.game_state.ai_last_turn_actions
+        print(f"Processing {len(ai_actions) if ai_actions else 0} AI actions")  # Debug print
         
-        # Display AI turn overlay after processing
-        if self.game_state.ai_last_turn_actions:
-            self.show_ai_turn = True
-            self.ui_state = UIState.AI_TURN
+        if ai_actions:
+            # Display AI actions in dialogue
+            for action in ai_actions:
+                speaker = self.game_state.ai_faction.value
+                result_text = f"{action['description']}"
+                if action.get('success', False):
+                    result_text += " (Success)"
+                    if action.get('effects'):
+                        result_text += f" - {', '.join(action['effects'])}"
+                else:
+                    result_text += " (Failed)"
+                self._add_dialogue_message(speaker, result_text, action.get('success', False))
+        else:
+            # Warning if no AI actions
+            print("Warning: No AI actions taken this turn")  # Debug print
+            self._add_dialogue_message("System", "The opponent seems inactive...", False)
         
-        # Update action points display
-        if self.game_state.next_turn_extra_ap > 0:
-            self.game_state.action_points += self.game_state.next_turn_extra_ap
-            self.game_state.next_turn_extra_ap = 0
+        # Return to main game state
+        self.show_ai_turn = False
+        self.ui_state = UIState.MAIN_GAME
+        print("Returned to MAIN_GAME state")  # Debug print
+        
+        # Update AP display
+        self._add_dialogue_message("System", f"Turn {self.game_state.turn} begins. You have {self.game_state.action_points} action points.", True)
         
         # Update available actions for the new turn
         self._update_available_actions()
         
-        # Add turn transition message to dialogue
-        self._add_dialogue_message("SYSTEM", f"Turn {self.game_state.turn} begins. You have {self.game_state.action_points} action points.")
-        
-        print(f"Turn ended. Now turn {self.game_state.turn} with {self.game_state.action_points} AP.")
+        # Check for game over
+        if self.game_state.game_over:
+            self._handle_game_over()
+            return
 
     def _update_available_actions(self):
         """Update the available actions based on the current game state."""
@@ -1138,6 +1188,14 @@ class TacticalUI:
         
         # TODO: Add proper game over screen
         print(f"Game over: {outcome_message}")
+
+    def _end_ai_turn(self):
+        """Handle transitioning from AI turn back to main game."""
+        self.show_ai_turn = False
+        self.ui_state = UIState.MAIN_GAME
+        # Update available actions for the new turn
+        self._update_available_actions()
+        print("AI turn ended, returning to main game")
 
     def _handle_input(self):
         """Process keyboard and controller input."""
@@ -1188,7 +1246,7 @@ class TacticalUI:
                             self.selected_index = min(len(factions) - 1, self.selected_index + 1)
                             self.last_input_time = current_time
                         elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                            self._select_faction(factions[self.selected_index])
+                            self._select_faction()
                             self.last_input_time = current_time
                     
                     elif self.ui_state == UIState.MAIN_GAME:
@@ -1210,7 +1268,6 @@ class TacticalUI:
                                 self.ui_state = UIState.ACTION_MENU
                                 self.selected_action_index = -1  # Reset selection
                                 self.last_input_time = current_time
-                                print("Entering action menu")
                         # End turn with T
                         elif event.key == pygame.K_t:
                             self._end_turn()
@@ -1344,7 +1401,7 @@ class TacticalUI:
                             
                         elif self.ui_state == UIState.FACTION_SELECT:
                             factions = self.faction_groups[self.selected_side]
-                            self._select_faction(factions[self.selected_index])
+                            self._select_faction()
                             self.last_input_time = current_time
                             
                         elif self.ui_state == UIState.MAIN_GAME:
@@ -1500,7 +1557,7 @@ class TacticalUI:
         # Check if we have enough action points
         if self.game_state.action_points < action.action_points:
             print(f"Not enough action points to perform {action.name}")
-            self._add_dialogue_message("SYSTEM", f"Not enough action points to perform {action.name}.", False)
+            self._add_dialogue_message("System", f"Not enough action points to perform {action.name}.", False)
             return
             
         # Perform the action
@@ -1527,6 +1584,16 @@ class TacticalUI:
         
         # Update available actions for the new game state
         self._update_available_actions()
+        
+        # Check if player is out of action points and end turn if so
+        if self.game_state.action_points <= 0:
+            print("Player out of action points - ending turn")  # Debug print
+            self._add_dialogue_message(
+                speaker="System",
+                text="Out of action points - ending turn",
+                success=True
+            )
+            self._end_turn()  # Automatically end turn when out of points
 
     def run(self):
         """Main game loop."""

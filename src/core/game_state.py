@@ -19,6 +19,7 @@ class GameState:
         self.ai_faction = self._assign_ai_opponent(player_faction)
         
         self.turn = 1
+        self.max_turns = 20  # Maximum number of turns before game over
         self.action_points = 3
         self.used_special_abilities = []
         self.next_turn_extra_ap = 0
@@ -56,56 +57,46 @@ class GameState:
             'media_control': 60       # Percentage of media managed
         }
         
-        # Resources for AI opponent
+        # AI resources and personnel
         self.ai_resources = {
             'manpower': 8,
-            'weapons': 6,
-            'hostages': 8,
-            'supplies': 5,
-            'escape_plans': 2,
-            'leverage': 3,
-            'ammunition': 7,
-            'communications': 4,
-            'exits_controlled': 2,
-            'water_access': 1,  # 0-1 where 1 is full access
-            'electrical_access': 1,  # 0-1 where 1 is full access
-            'information': 4,
-            'money_demanded': 10000000,
-            'structural_knowledge': 7,  # Understanding of the building
-            'public_fear': 6,       # Level of terror instilled (0-10)
-            'concealment': 8        # How well hidden their positions are (0-10)
+            'equipment': 4,
+            'concealment': 7,
+            'leverage': 5,
+            'money_demanded': 1000000
         }
         
-        # Personnel tracking - player side
-        self.player_personnel = {
-            'negotiators': 2,
-            'tactical_units': 5,
-            'tech_specialists': 3,
-            'medics': 2,
-            'snipers': 3
-        }
-        
-        # Personnel tracking - AI side
         self.ai_personnel = {
-            'leaders': 1,
-            'armed_members': 5,
-            'specialists': 2
+            'armed_members': 6,
+            'negotiators': 2,
+            'lookouts': 4,
+            'technical_experts': 2
         }
         
-        # Hostage situation - expanded
-        self.total_hostages = 8
+        # Player personnel
+        self.player_personnel = {
+            'negotiators': 4,
+            'tactical_team': 8,
+            'medical_staff': 3,
+            'tech_specialists': 3,
+            'intelligence_officers': 4
+        }
+        
+        # Hostage tracking
+        self.total_hostages = 10
         self.hostages_released = 0
-        self.hostages_wounded = 0
         self.hostages_killed = 0
+        self.hostage_deadline = 10  # Turns until first hostage execution
+        
         self.hostages_status = [
-            {'id': 1, 'name': 'Hostage 1', 'status': 'captured', 'health': 100, 'stress': 50},
-            {'id': 2, 'name': 'Hostage 2', 'status': 'captured', 'health': 100, 'stress': 60},
-            {'id': 3, 'name': 'Hostage 3', 'status': 'captured', 'health': 100, 'stress': 70},
-            {'id': 4, 'name': 'Hostage 4', 'status': 'captured', 'health': 100, 'stress': 55},
-            {'id': 5, 'name': 'Hostage 5', 'status': 'captured', 'health': 100, 'stress': 65},
-            {'id': 6, 'name': 'Hostage 6', 'status': 'captured', 'health': 100, 'stress': 45},
-            {'id': 7, 'name': 'Hostage 7', 'status': 'captured', 'health': 100, 'stress': 75},
-            {'id': 8, 'name': 'Hostage 8', 'status': 'captured', 'health': 100, 'stress': 50}
+            {
+                'id': i,
+                'name': f"Hostage {i+1}",
+                'status': 'captured',  # captured, released, killed
+                'health': 100,
+                'stress': 50
+            }
+            for i in range(self.total_hostages)
         ]
         
         # Tactical advantages
@@ -134,10 +125,6 @@ class GameState:
             'public_panic': 0.1,     # 0.0 to 1.0
             'political_pressure': 0.2 # 0.0 to 1.0
         }
-        
-        # Time pressure
-        self.max_turns = 15
-        self.hostage_deadline = 10  # Turns until first hostage execution
         
         # Demands tracking
         self.demands = {
@@ -281,7 +268,7 @@ class GameState:
             self.defeat_reason = "Situation escalated out of control"
             return True
             
-        if self.turn >= self.max_turns:
+        if self.turn > self.max_turns:  # Changed from >= to > to allow the final turn to complete
             self.game_over = True
             self.victory = False
             self.defeat_reason = "Time ran out"
@@ -381,24 +368,24 @@ class GameState:
             self.game_history = self.game_history[-100:]
     
     def modify_trust(self, amount: float):
-        """Modify the trust level."""
+        """Modify trust level, keeping it between 0 and 1."""
         self.trust_level = max(0.0, min(1.0, self.trust_level + amount))
     
     def modify_tension(self, amount: float):
-        """Modify the tension level."""
+        """Modify tension level, keeping it between 0 and 1."""
         self.tension_level = max(0.0, min(1.0, self.tension_level + amount))
     
     def modify_morale(self, amount: float):
-        """Modify the morale level."""
+        """Modify morale level, keeping it between 0 and 1."""
         self.morale_level = max(0.0, min(1.0, self.morale_level + amount))
     
     def modify_player_resource(self, resource: str, amount: int):
-        """Modify a player resource amount."""
+        """Modify a player resource by the given amount."""
         if resource in self.player_resources:
             self.player_resources[resource] = max(0, self.player_resources[resource] + amount)
     
     def modify_ai_resource(self, resource: str, amount: int):
-        """Modify an AI resource amount."""
+        """Modify an AI resource by the given amount."""
         if resource in self.ai_resources:
             self.ai_resources[resource] = max(0, self.ai_resources[resource] + amount)
     
@@ -413,48 +400,47 @@ class GameState:
             self.ai_personnel[personnel_type] = max(0, self.ai_personnel[personnel_type] + amount)
     
     def update_hostage_status(self, hostage_id: int, status_update: Dict):
-        """Update the status of a specific hostage."""
+        """Update a hostage's status with the given updates."""
         for hostage in self.hostages_status:
             if hostage['id'] == hostage_id:
                 for key, value in status_update.items():
                     if key in hostage:
                         hostage[key] = value
-                # Update summary counts
-                if status_update.get('status') == 'released':
-                    self.hostages_released += 1
-                elif status_update.get('status') == 'wounded':
-                    self.hostages_wounded += 1
-                elif status_update.get('status') == 'killed':
-                    self.hostages_killed += 1
+                if 'status' in status_update:
+                    if status_update['status'] == 'killed':
+                        self.hostages_killed += 1
+                    elif status_update['status'] == 'wounded':
+                        self.hostages_wounded += 1
+                    elif status_update['status'] == 'released':
+                        self.hostages_released += 1
                 break
     
     def update_environment(self, condition: str, value):
         """Update an environmental condition."""
         if condition in self.environment:
-            old_value = self.environment[condition]
             self.environment[condition] = value
             
             # Update related resources based on environmental changes
             if condition == 'power_status':
-                if value == 'off' and old_value != 'off':
+                if value == 'off' and self.environment[condition] != 'off':
                     self.player_resources['surveillance_cameras'] = max(0, self.player_resources['surveillance_cameras'] - 4)
                     self.player_resources['communications_equipment'] = max(0, self.player_resources['communications_equipment'] - 2)
                     self.ai_resources['electrical_access'] = 0
-                elif value == 'on' and old_value != 'on':
+                elif value == 'on' and self.environment[condition] != 'on':
                     self.player_resources['surveillance_cameras'] = min(10, self.player_resources['surveillance_cameras'] + 4)
                     self.player_resources['communications_equipment'] = min(10, self.player_resources['communications_equipment'] + 2)
                     self.ai_resources['electrical_access'] = 1
             elif condition == 'water_status':
-                if value == 'off' and old_value != 'off':
+                if value == 'off' and self.environment[condition] != 'off':
                     self.ai_resources['water_access'] = 0
                     # Reduce hostage health due to no water
                     for hostage in self.hostages_status:
                         if hostage['status'] == 'captured':
                             hostage['health'] = max(10, hostage['health'] - 10)
-                elif value == 'on' and old_value != 'on':
+                elif value == 'on' and self.environment[condition] != 'on':
                     self.ai_resources['water_access'] = 1
             elif condition == 'fire_status':
-                if value != 'none' and old_value == 'none':
+                if value != 'none' and self.environment[condition] == 'none':
                     # Fire reduces concealment and may damage exits
                     self.ai_resources['concealment'] = max(0, self.ai_resources['concealment'] - 3)
                     if random.random() < 0.5:  # 50% chance to lose an exit
@@ -504,13 +490,20 @@ class GameState:
     def process_ai_turn(self) -> List[Dict]:
         """Process the AI's turn."""
         if not self.ai_opponent:
+            print("Initializing AI opponent...")  # Debug print
             self.init_ai_opponent()
             
         # Start AI turn
         self.ai_turn_active = True
+        print(f"AI Turn Active: {self.ai_faction.value}")  # Debug print
+        
+        # Reset AI action points
+        self.ai_opponent.action_points = 3
+        print(f"Reset AI action points to {self.ai_opponent.action_points}")  # Debug print
         
         # AI takes actions
         ai_actions = self.ai_opponent.take_turn(self)
+        print(f"AI Actions taken: {len(ai_actions)}")  # Debug print
         
         # Record AI actions
         self.ai_last_turn_actions = ai_actions
@@ -518,25 +511,25 @@ class GameState:
         
         # Add to game history
         for action in ai_actions:
-            self.add_history_entry({
-                'turn': self.turn,
-                'actor': 'AI',
-                'action': action['action'],
-                'success': action['success'],
-                'effects': action['effects']
-            })
+            self.add_history_entry(
+                message=f"{self.ai_faction.value} performed {action['action_name']}: {action['description']}",
+                actor='AI',
+                action=action['action_name'],
+                success=action['success']
+            )
             
             # Add dialogue for some actions
             if action['category'] in ["NEGOTIATION", "PSYCHOLOGICAL", "DEMANDS"]:
                 speaker = self.ai_faction.value
                 self.add_dialogue(
                     speaker=speaker,
-                    text=f"{action['description']}",
+                    text=action['description'],
                     success=action['success']
                 )
         
         # End AI turn
         self.ai_turn_active = False
+        print("AI turn ended")  # Debug print
         
         # Check for game over
         self.check_game_over()
@@ -545,18 +538,29 @@ class GameState:
     
     def end_turn(self):
         """End the current turn."""
+        print("Starting end_turn in GameState")  # Debug print
+        
         # Process AI turn first
         if not self.game_over:
-            ai_results = self.process_ai_turn()
+            # Reset AI action points before their turn
+            if self.ai_opponent:
+                self.ai_opponent.action_points = 3  # Reset AI action points
+                print("AI action points reset")  # Debug print
+                
+            # Process AI turn and store results
+            self.ai_last_turn_actions = self.process_ai_turn()
+            print(f"AI turn processed, got {len(self.ai_last_turn_actions)} actions")  # Debug print
             
         # Then advance to next turn
         self.turn += 1
-        self.action_points = 3  # Reset action points
+        self.action_points = 3  # Reset player action points
+        print(f"Advanced to turn {self.turn}, reset player AP to {self.action_points}")  # Debug print
         
         # Apply extra AP from special abilities
         if self.next_turn_extra_ap > 0:
             self.action_points += self.next_turn_extra_ap
             self.next_turn_extra_ap = 0
+            print(f"Applied extra AP, new total: {self.action_points}")  # Debug print
         
         # Update cooldowns
         self.update_cooldowns()
@@ -576,6 +580,7 @@ class GameState:
         
         # Check for game over
         self.check_game_over()
+        print("End turn completed in GameState")  # Debug print
     
     def update_state_after_action(self, action_name: str, category: str, success: bool):
         """Update game state after an action is performed."""
@@ -655,7 +660,7 @@ class GameState:
         else:
             # Failed actions may impact player resources
             if category == "FORCE" and random.random() < 0.4:  # 40% chance
-                self.modify_player_personnel("tactical_units", -1)
+                self.modify_player_personnel("tactical_team", -1)
         
         # Check for game over
         self.check_game_over() 
